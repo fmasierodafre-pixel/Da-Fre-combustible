@@ -1,23 +1,44 @@
+JavaScript
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
+let supabase = null;
+if (supabaseUrl && supabaseAnonKey) {
+  try {
+    supabase = createClient(supabaseUrl, supabaseAnonKey);
+  } catch (e) {
+    console.error('Error al inicializar Supabase:', e);
+  }
+}
 
 export default function App() {
   const [tanques, setTanques] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
-    fetchTanques();
+    if (supabase) {
+      fetchTanques();
+    } else {
+      setErrorMsg('Faltan las variables de entorno VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY en Vercel.');
+    }
   }, []);
 
   async function fetchTanques() {
     setLoading(true);
-    const { data, error } = await supabase.from('tanques').select('*');
-    if (!error && data) {
-      setTanques(data);
+    setErrorMsg('');
+    try {
+      const { data, error } = await supabase.from('tanques').select('*');
+      if (error) {
+        setErrorMsg('Error al conectar con la base de datos: ' + error.message);
+      } else if (data) {
+        setTanques(data);
+      }
+    } catch (err) {
+      setErrorMsg('Error de red al consultar Supabase.');
     }
     setLoading(false);
   }
@@ -33,10 +54,16 @@ export default function App() {
         </div>
         <button 
           onClick={fetchTanques} 
-          style={{ backgroundColor: '#1e293b', color: '#e2e8f0', border: 'none', padding: '10px 15px', borderRadius: '8px', cursor: 'pointer' }}>
+          style={{ backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', padding: '10px 15px', borderRadius: '8px', cursor: 'pointer' }}>
           {loading ? 'Cargando...' : '🔄 Actualizar'}
         </button>
       </header>
+
+      {errorMsg && (
+        <div style={{ backgroundColor: '#7f1d1d', color: '#fecaca', padding: '15px', borderRadius: '8px', marginBottom: '20px', border: '1px solid #ef4444' }}>
+          ⚠️ <strong>Atención:</strong> {errorMsg}
+        </div>
+      )}
 
       <section>
         <h2 style={{ fontSize: '18px', marginBottom: '15px', color: '#cbd5e1' }}>Stock de Cisternas</h2>
@@ -59,8 +86,8 @@ export default function App() {
               </div>
             ))
           ) : (
-            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: '#94a3b8' }}>
-              {loading ? 'Conectando con Supabase...' : 'No hay cisternas registradas o verifica las variables de entorno.'}
+            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: '#94a3b8', backgroundColor: '#1e293b', borderRadius: '8px' }}>
+              {loading ? 'Conectando con Supabase...' : 'No hay cisternas registradas para mostrar.'}
             </div>
           )}
         </div>
