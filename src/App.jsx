@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Fuel, Truck, AlertTriangle, FileSpreadsheet, PlusCircle, RefreshCw } from 'lucide-react';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -24,79 +23,46 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white p-4 md:p-8 font-sans">
-      {/* Header */}
-      <header className="flex justify-between items-center mb-8 border-b border-slate-700 pb-4">
+    <div style={{ minHeight: '100vh', backgroundColor: '#0f172a', color: '#ffffff', padding: '20px', fontFamily: 'sans-serif' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', borderBottom: '1px solid #334155', paddingBottom: '15px' }}>
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-amber-500 flex items-center gap-2">
-            <Fuel className="w-8 h-8" /> DA FRE - Gestión de Flota y Combustibles
+          <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#f59e0b', margin: 0 }}>
+            ⛽ DA FRE - Gestión de Flota y Combustibles
           </h1>
-          <p className="text-slate-400 text-sm">Control de Cisternas y Cargas Diarias</p>
+          <p style={{ color: '#94a3b8', fontSize: '14px', margin: '5px 0 0 0' }}>Control de Cisternas y Cargas Diarias</p>
         </div>
         <button 
           onClick={fetchTanques} 
-          className="bg-slate-800 hover:bg-slate-700 p-2 rounded-lg text-slate-300 flex items-center gap-2 text-sm">
-          <RefreshCw className={w-4 h-4 ${loading ? 'animate-spin' : ''}} /> Actualizar
+          style={{ backgroundColor: '#1e293b', color: '#e2e8f0', border: 'none', padding: '10px 15px', borderRadius: '8px', cursor: 'pointer' }}>
+          {loading ? 'Cargando...' : '🔄 Actualizar'}
         </button>
       </header>
 
-      {/* Tarjetas de Stock de Cisternas */}
-      <section className="mb-8">
-        <h2 className="text-xl font-semibold mb-4 text-slate-200">Stock de Cisternas</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <section>
+        <h2 style={{ fontSize: '18px', marginBottom: '15px', color: '#cbd5e1' }}>Stock de Cisternas</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
           {tanques.length > 0 ? (
             tanques.map((t) => (
-              <div key={t.id} className="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-lg">
-                <div className="flex justify-between items-start mb-3">
-                  <h3 className="font-bold text-lg text-slate-100">{t.nombre}</h3>
-                  <span className="text-xs bg-amber-500/10 text-amber-400 px-2.5 py-1 rounded-full font-medium">
+              <div key={t.id} style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
+                  <h3 style={{ margin: 0, fontSize: '18px' }}>{t.nombre}</h3>
+                  <span style={{ fontSize: '12px', backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b', padding: '4px 8px', borderRadius: '12px' }}>
                     Factor: {t.factor_calibracion}
                   </span>
                 </div>
-                <div className="text-3xl font-extrabold text-amber-400 mb-1">
-                  {Number(t.stock_actual_l).toLocaleString('es-AR')} <span className="text-lg font-normal text-slate-400">L</span>
+                <div style={{ fontSize: '28px', fontWeight: 'bold', color: '#f59e0b' }}>
+                  {Number(t.stock_actual_l).toLocaleString('es-AR')} <span style={{ fontSize: '16px', color: '#94a3b8' }}>L</span>
                 </div>
-                <p className="text-xs text-slate-400">Capacidad Total: {Number(t.capacidad_l).toLocaleString('es-AR')} L</p>
-                
-                {/* Barra de Progreso */}
-                <div className="w-full bg-slate-700 h-2.5 rounded-full mt-4 overflow-hidden">
-                  <div 
-                    className={`h-full rounded-full ${
-                      (t.stock_actual_l / t.capacidad_l) < 0.25 ? 'bg-red-500' : 'bg-amber-500'
-                    }`}
-                    style={{ width: ${Math.min(Math.max((t.stock_actual_l / t.capacidad_l) * 100, 0), 100)}% }}
-                  ></div>
-                </div>
+                <p style={{ fontSize: '12px', color: '#94a3b8', margin: '5px 0 0 0' }}>
+                  Capacidad Total: {Number(t.capacidad_l).toLocaleString('es-AR')} L
+                </p>
               </div>
             ))
           ) : (
-            <div className="col-span-3 text-center py-8 text-slate-400">
-              {loading ? 'Cargando cisternas desde Supabase...' : 'No se encontraron cisternas cargadas.'}
+            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: '#94a3b8' }}>
+              {loading ? 'Conectando con Supabase...' : 'No hay cisternas registradas o verifica las variables de entorno.'}
             </div>
           )}
-        </div>
-      </section>
-
-      {/* Accesos Rápidos */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700/50 flex items-center gap-4">
-          <div className="bg-amber-500/20 p-4 rounded-lg text-amber-400">
-            <PlusCircle className="w-8 h-8" />
-          </div>
-          <div>
-            <h3 className="font-bold text-lg">Nueva Carga Diaria</h3>
-            <p className="text-sm text-slate-400">Registrar despacho de combustible a equipos o transferencias.</p>
-          </div>
-        </div>
-
-        <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700/50 flex items-center gap-4">
-          <div className="bg-blue-500/20 p-4 rounded-lg text-blue-400">
-            <FileSpreadsheet className="w-8 h-8" />
-          </div>
-          <div>
-            <h3 className="font-bold text-lg">Importar / Exportar Excel</h3>
-            <p className="text-sm text-slate-400">Sincronización con archivos de flota y respaldos.</p>
-          </div>
         </div>
       </section>
     </div>
