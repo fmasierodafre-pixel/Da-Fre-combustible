@@ -22,6 +22,7 @@ export default function App() {
   
   const [excelRows, setExcelRows] = useState([]);
   const [excelName, setExcelName] = useState('');
+  const [subiendoExcel, setSubiendoExcel] = useState(false);
 
   useEffect(() => {
     if (supabase) {
@@ -75,14 +76,53 @@ export default function App() {
     reader.onload = (evt) => {
       const text = evt.target.result;
       const lines = text.split('\n');
-      const rows = lines.map(line => line.split(/[,;\t]/)).filter(r => r.length > 1);
+      const rows = lines.map(line => line.split(/[,;\t]/).map(val => val.trim())).filter(r => r.length > 1 && r[0] !== '');
       setExcelRows(rows);
     };
     reader.readAsText(file);
   };
 
+  // Subir datos del Excel a Supabase
   const procesarDatosExcelEnSupabase = async () => {
-    alert('Archivo procesado correctamente. Listo para sincronizar con Supabase.');
+    if (!supabase) {
+      alert('Supabase no está conectado.');
+      return;
+    }
+    if (excelRows.length === 0) {
+      alert('No hay filas para procesar.');
+      return;
+    }
+
+    setSubiendoExcel(true);
+    try {
+      // Tomamos las filas (asumiendo formato: Equipo, Litros, Chofer, Horometro/Km u similar)
+      // Empezamos desde la fila 1 si la fila 0 tiene los encabezados
+      const filasAInsertar = excelRows.slice(1).map(row => ({
+        equipo: row[0] || 'Sin especificar',
+        litros: parseFloat(row[1]) || 0,
+        chofer: row[2] || '',
+        horometro_km: row[3] || ''
+      })).filter(item => item.litros > 0);
+
+      if (filasAInsertar.length === 0) {
+        alert('No se encontraron registros válidos con litros para insertar. Verificá las columnas.');
+        setSubiendoExcel(false);
+        return;
+      }
+
+      // Insertar en lotes en Supabase
+      const { error } = await supabase.from('cargas').insert(filasAInsertar);
+      if (error) throw error;
+
+      alert(¡Se subieron exitosamente ${filasAInsertar.length} registros a Supabase!);
+      setExcelRows([]);
+      setExcelName('');
+      setPestana('dashboard');
+      fetchCargas();
+    } catch (err) {
+      alert('Error al subir a Supabase: ' + err.message);
+    }
+    setSubiendoExcel(false);
   };
 
   return (
@@ -207,8 +247,8 @@ export default function App() {
 
       {pestana === 'excel' && (
         <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
-          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla Excel / CSV</h2>
-          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Seleccioná tu archivo CSV o de texto para procesar los datos.</p>
+          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla CSV</h2>
+          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Seleccioná tu archivo CSV para subir los datos directo a Supabase.</p>
           
           <input type="file" accept=".csv, .txt" onChange={handleCargarExcel} style={{ width: '100%', padding: '12px', background: '#0f172a', color: '#fff', border: '1px dashed #475569', borderRadius: '6px', marginBottom: '15px' }} />
 
@@ -216,8 +256,8 @@ export default function App() {
             <div style={{ background: '#0f172a', padding: '15px', borderRadius: '8px', border: '1px solid #334155' }}>
               <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>📄 Archivo: <strong>{excelName}</strong> ({excelRows.length} filas detectadas)</p>
               
-              <button onClick={procesarDatosExcelEnSupabase} style={{ background: '#38bdf8', color: '#000', fontWeight: 'bold', padding: '12px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer', width: '100%' }}>
-                🚀 Procesar y Sincronizar con Base de Datos
+              <button onClick={procesarDatosExcelEnSupabase} disabled={subiendoExcel} style={{ background: '#38bdf8', color: '#000', fontWeight: 'bold', padding: '12px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer', width: '100%' }}>
+                {subiendoExcel ? '⏳ Subiendo a Supabase...' : '🚀 Subir y Sincronizar con Supabase'}
               </button>
             </div>
           )}
