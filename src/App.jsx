@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
+import * as XLSX from 'xlsx';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -67,6 +68,7 @@ export default function App() {
     }
   };
 
+  // Lector real de Excel (.xlsx)
   const handleCargarExcel = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -74,15 +76,21 @@ export default function App() {
     
     const reader = new FileReader();
     reader.onload = (evt) => {
-      const text = evt.target.result;
-      const lines = text.split('\n');
-      const rows = lines.map(line => line.split(/[,;\t]/).map(val => val.trim())).filter(r => r.length > 1 && r[0] !== '');
-      setExcelRows(rows);
+      try {
+        const bstr = evt.target.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
+        setExcelRows(data.filter(row => row.length > 0));
+      } catch (err) {
+        alert('Error al leer el Excel: ' + err.message);
+      }
     };
-    reader.readAsText(file);
+    reader.readAsBinaryString(file);
   };
 
-  // Subir datos del Excel a Supabase
+  // Subir datos leídos del Excel directamente a Supabase
   const procesarDatosExcelEnSupabase = async () => {
     if (!supabase) {
       alert('Supabase no está conectado.');
@@ -95,22 +103,20 @@ export default function App() {
 
     setSubiendoExcel(true);
     try {
-      // Tomamos las filas (asumiendo formato: Equipo, Litros, Chofer, Horometro/Km u similar)
-      // Empezamos desde la fila 1 si la fila 0 tiene los encabezados
+      // Omitimos la primera fila (encabezados) y mapeamos las columnas
       const filasAInsertar = excelRows.slice(1).map(row => ({
-        equipo: row[0] || 'Sin especificar',
+        equipo: row[0] ? String(row[0]) : 'Sin especificar',
         litros: parseFloat(row[1]) || 0,
-        chofer: row[2] || '',
-        horometro_km: row[3] || ''
+        chofer: row[2] ? String(row[2]) : '',
+        horometro_km: row[3] ? String(row[3]) : ''
       })).filter(item => item.litros > 0);
 
       if (filasAInsertar.length === 0) {
-        alert('No se encontraron registros válidos con litros para insertar. Verificá las columnas.');
+        alert('No se encontraron filas con litros válidos para subir. Verificá las columnas del archivo.');
         setSubiendoExcel(false);
         return;
       }
 
-      // Insertar en lotes en Supabase
       const { error } = await supabase.from('cargas').insert(filasAInsertar);
       if (error) throw error;
 
@@ -120,7 +126,7 @@ export default function App() {
       setPestana('dashboard');
       fetchCargas();
     } catch (err) {
-      alert('Error al subir a Supabase: ' + err.message);
+      alert('Error al sincronizar con Supabase: ' + err.message);
     }
     setSubiendoExcel(false);
   };
@@ -247,10 +253,10 @@ export default function App() {
 
       {pestana === 'excel' && (
         <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
-          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla CSV</h2>
-          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Seleccioná tu archivo CSV para subir los datos directo a Supabase.</p>
+          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla Excel (.xlsx)</h2>
+          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Seleccioná tu archivo de Excel para subir los registros a Supabase.</p>
           
-          <input type="file" accept=".csv, .txt" onChange={handleCargarExcel} style={{ width: '100%', padding: '12px', background: '#0f172a', color: '#fff', border: '1px dashed #475569', borderRadius: '6px', marginBottom: '15px' }} />
+          <input type="file" accept=".xlsx, .xls, .csv" onChange={handleCargarExcel} style={{ width: '100%', padding: '12px', background: '#0f172a', color: '#fff', border: '1px dashed #475569', borderRadius: '6px', marginBottom: '15px' }} />
 
           {excelName && (
             <div style={{ background: '#0f172a', padding: '15px', borderRadius: '8px', border: '1px solid #334155' }}>
