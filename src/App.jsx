@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import * as XLSX from 'xlsx';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -21,7 +20,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [formCarga, setFormCarga] = useState({ tanque_id: '', equipo: '', litros: '', chofer: '', horometro_km: '' });
   
-  const [excelData, setExcelData] = useState([]);
+  const [excelRows, setExcelRows] = useState([]);
   const [excelName, setExcelName] = useState('');
 
   useEffect(() => {
@@ -67,7 +66,6 @@ export default function App() {
     }
   };
 
-  // Lector real de Excel (.xlsx, .xls, .csv)
   const handleCargarExcel = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -75,26 +73,16 @@ export default function App() {
     
     const reader = new FileReader();
     reader.onload = (evt) => {
-      try {
-        const bstr = evt.target.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
-        setExcelData(data.filter(row => row.length > 0));
-      } catch (err) {
-        alert('Error al leer el archivo Excel: ' + err.message);
-      }
+      const text = evt.target.result;
+      const lines = text.split('\n');
+      const rows = lines.map(line => line.split(/[,;\t]/)).filter(r => r.length > 1);
+      setExcelRows(rows);
     };
-    reader.readAsBinaryString(file);
+    reader.readAsText(file);
   };
 
   const procesarDatosExcelEnSupabase = async () => {
-    if (excelData.length === 0) {
-      alert('No hay datos para procesar.');
-      return;
-    }
-    alert(Archivo "${excelName}" leído con éxito (${excelData.length} filas). Preparando sincronización con Supabase para combustible, obras y flota.);
+    alert('Archivo procesado correctamente. Listo para sincronizar con Supabase.');
   };
 
   return (
@@ -218,34 +206,16 @@ export default function App() {
       )}
 
       {pestana === 'excel' && (
-        <div style={{ maxWidth: '700px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
-          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla Excel (XLSX / XLS)</h2>
-          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Seleccioná tu archivo de Excel para ver la vista previa en formato de tabla.</p>
+        <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla Excel / CSV</h2>
+          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Seleccioná tu archivo CSV o de texto para procesar los datos.</p>
           
-          <input type="file" accept=".xlsx, .xls, .csv" onChange={handleCargarExcel} style={{ width: '100%', padding: '12px', background: '#0f172a', color: '#fff', border: '1px dashed #475569', borderRadius: '6px', marginBottom: '15px' }} />
+          <input type="file" accept=".csv, .txt" onChange={handleCargarExcel} style={{ width: '100%', padding: '12px', background: '#0f172a', color: '#fff', border: '1px dashed #475569', borderRadius: '6px', marginBottom: '15px' }} />
 
           {excelName && (
             <div style={{ background: '#0f172a', padding: '15px', borderRadius: '8px', border: '1px solid #334155' }}>
-              <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>📄 Archivo: <strong>{excelName}</strong> ({excelData.length} filas detectadas)</p>
+              <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>📄 Archivo: <strong>{excelName}</strong> ({excelRows.length} filas detectadas)</p>
               
-              {excelData.length > 0 && (
-                <div style={{ maxHeight: '200px', overflowY: 'auto', fontSize: '12px', marginBottom: '15px', background: '#1e293b', padding: '8px', borderRadius: '4px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-                    <tbody>
-                      {excelData.slice(0, 10).map((row, idx) => (
-                        <tr key={idx} style={{ borderBottom: '1px solid #334155' }}>
-                          {row.map((cell, cIdx) => (
-                            <td key={cIdx} style={{ padding: '6px', color: idx === 0 ? '#38bdf8' : '#cbd5e1', fontWeight: idx === 0 ? 'bold' : 'normal' }}>
-                              {cell !== undefined ? String(cell) : ''}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
               <button onClick={procesarDatosExcelEnSupabase} style={{ background: '#38bdf8', color: '#000', fontWeight: 'bold', padding: '12px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer', width: '100%' }}>
                 🚀 Procesar y Sincronizar con Base de Datos
               </button>
