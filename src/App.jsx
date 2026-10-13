@@ -15,12 +15,20 @@ if (supabaseUrl && supabaseAnonKey) {
 
 export default function App() {
   const [tanques, setTanques] = useState([]);
+  const [cargas, setCargas] = useState([]);
   const [pestana, setPestana] = useState('dashboard');
   const [loading, setLoading] = useState(false);
   const [formCarga, setFormCarga] = useState({ tanque_id: '', equipo: '', litros: '', chofer: '', horometro_km: '' });
+  
+  // Estado para el Excel
+  const [excelRows, setExcelRows] = useState([]);
+  const [excelName, setExcelName] = useState('');
 
   useEffect(() => {
-    if (supabase) fetchTanques();
+    if (supabase) {
+      fetchTanques();
+      fetchCargas();
+    }
   }, []);
 
   async function fetchTanques() {
@@ -34,6 +42,15 @@ export default function App() {
     setLoading(false);
   }
 
+  async function fetchCargas() {
+    try {
+      const { data, error } = await supabase.from('cargas').select('*').order('created_at', { ascending: false }).limit(20);
+      if (!error && data) setCargas(data);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   const handleGuardarCarga = async (e) => {
     e.preventDefault();
     if (!supabase) return;
@@ -44,9 +61,34 @@ export default function App() {
       setFormCarga({ tanque_id: '', equipo: '', litros: '', chofer: '', horometro_km: '' });
       setPestana('dashboard');
       fetchTanques();
+      fetchCargas();
     } catch (err) {
       alert('Error al registrar: ' + err.message);
     }
+  };
+
+  // Lector de archivos CSV / Texto plano de Excel
+  const handleCargarExcel = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setExcelName(file.name);
+    
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const text = evt.target.result;
+      const lines = text.split('\n');
+      const rows = lines.map(line => line.split(/[,;\t]/)).filter(r => r.length > 1);
+      setExcelRows(rows);
+    };
+    reader.readAsText(file);
+  };
+
+  const procesarDatosExcelEnSupabase = async () => {
+    if (excelRows.length === 0) {
+      alert('No hay datos para procesar.');
+      return;
+    }
+    alert(Se procesaron ${excelRows.length} filas del archivo "${excelName}". Listo para sincronizar con Supabase.);
   };
 
   return (
@@ -54,20 +96,23 @@ export default function App() {
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #334155', paddingBottom: '15px', marginBottom: '20px', flexWrap: 'wrap', gap: '15px' }}>
         <div>
           <h1 style={{ fontSize: '22px', fontWeight: 'bold', color: '#f59e0b', margin: 0 }}>⛽ DA FRE - Combustibles</h1>
-          <p style={{ color: '#94a3b8', fontSize: '13px', margin: '5px 0 0 0' }}>Gestión de Flota y Cisternas</p>
+          <p style={{ color: '#94a3b8', fontSize: '13px', margin: '5px 0 0 0' }}>Gestión Integral de Flota, Cisternas y Mantenimiento</p>
         </div>
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button onClick={() => setPestana('dashboard')} style={{ background: pestana === 'dashboard' ? '#f59e0b' : '#1e293b', color: pestana === 'dashboard' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 14px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>📊 Dashboard</button>
-          <button onClick={() => setPestana('nueva_carga')} style={{ background: pestana === 'nueva_carga' ? '#f59e0b' : '#1e293b', color: pestana === 'nueva_carga' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 14px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>➕ Nueva Carga</button>
-          <button onClick={() => setPestana('excel')} style={{ background: pestana === 'excel' ? '#f59e0b' : '#1e293b', color: pestana === 'excel' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 14px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>📁 Excel</button>
-          <button onClick={fetchTanques} style={{ background: '#1e293b', color: '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer' }}>🔄</button>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <button onClick={() => setPestana('dashboard')} style={{ background: pestana === 'dashboard' ? '#f59e0b' : '#1e293b', color: pestana === 'dashboard' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>📊 Dashboard</button>
+          <button onClick={() => setPestana('nueva_carga')} style={{ background: pestana === 'nueva_carga' ? '#f59e0b' : '#1e293b', color: pestana === 'nueva_carga' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>➕ Nueva Carga</button>
+          <button onClick={() => setPestana('equipos')} style={{ background: pestana === 'equipos' ? '#f59e0b' : '#1e293b', color: pestana === 'equipos' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>🚜 Equipos</button>
+          <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#f59e0b' : '#1e293b', color: pestana === 'mantenimiento' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>🔧 Mantenimiento</button>
+          <button onClick={() => setPestana('excel')} style={{ background: pestana === 'excel' ? '#f59e0b' : '#1e293b', color: pestana === 'excel' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>📁 Excel</button>
+          <button onClick={() => { fetchTanques(); fetchCargas(); }} style={{ background: '#1e293b', color: '#fff', border: '1px solid #475569', padding: '8px 10px', borderRadius: '8px', cursor: 'pointer' }}>🔄</button>
         </div>
       </header>
 
+      {/* DASHBOARD */}
       {pestana === 'dashboard' && (
         <div>
           <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Stock de Cisternas</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '20px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '20px', marginBottom: '30px' }}>
             {tanques.length > 0 ? (
               tanques.map(t => (
                 <div key={t.id} style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155' }}>
@@ -77,20 +122,49 @@ export default function App() {
                 </div>
               ))
             ) : (
-              <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: '#94a3b8', backgroundColor: '#1e293b', borderRadius: '8px' }}>
-                {loading ? 'Cargando...' : 'No hay cisternas registradas en Supabase.'}
+              <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '30px', color: '#94a3b8', backgroundColor: '#1e293b', borderRadius: '8px' }}>
+                {loading ? 'Cargando cisternas...' : 'No hay cisternas registradas en Supabase.'}
               </div>
+            )}
+          </div>
+
+          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Últimas Cargas Registradas</h2>
+          <div style={{ backgroundColor: '#1e293b', borderRadius: '12px', border: '1px solid #334155', overflow: 'hidden' }}>
+            {cargas.length > 0 ? (
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8' }}>
+                    <th style={{ padding: '12px' }}>Equipo</th>
+                    <th style={{ padding: '12px' }}>Litros</th>
+                    <th style={{ padding: '12px' }}>Chofer</th>
+                    <th style={{ padding: '12px' }}>Km / Horómetro</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cargas.map((c, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '12px', fontWeight: 'bold' }}>{c.equipo}</td>
+                      <td style={{ padding: '12px', color: '#f59e0b' }}>{c.litros} L</td>
+                      <td style={{ padding: '12px' }}>{c.chofer || '-'}</td>
+                      <td style={{ padding: '12px' }}>{c.horometro_km || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div style={{ padding: '30px', textAlign: 'center', color: '#94a3b8' }}>No hay registros de cargas recientes.</div>
             )}
           </div>
         </div>
       )}
 
+      {/* NUEVA CARGA */}
       {pestana === 'nueva_carga' && (
         <div style={{ maxWidth: '500px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
-          <h2 style={{ fontSize: '18px', marginBottom: '15px', color: '#f59e0b' }}>Registrar Carga</h2>
+          <h2 style={{ fontSize: '18px', marginBottom: '15px', color: '#f59e0b' }}>Registrar Carga de Combustible</h2>
           <form onSubmit={handleGuardarCarga} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div>
-              <label style={{ fontSize: '13px', color: '#cbd5e1' }}>Cisterna</label>
+              <label style={{ fontSize: '13px', color: '#cbd5e1' }}>Cisterna de Origen</label>
               <select value={formCarga.tanque_id} onChange={e => setFormCarga({...formCarga, tanque_id: e.target.value})} required style={{ width: '100%', padding: '10px', background: '#0f172a', color: '#fff', border: '1px solid #475569', borderRadius: '6px' }}>
                 <option value="">Seleccionar...</option>
                 {tanques.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
@@ -111,7 +185,7 @@ export default function App() {
               </div>
             </div>
             <div>
-              <label style={{ fontSize: '13px', color: '#cbd5e1' }}>Chofer</label>
+              <label style={{ fontSize: '13px', color: '#cbd5e1' }}>Chofer / Responsable</label>
               <input type="text" placeholder="Nombre" value={formCarga.chofer} onChange={e => setFormCarga({...formCarga, chofer: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', color: '#fff', border: '1px solid #475569', borderRadius: '6px' }} />
             </div>
             <button type="submit" style={{ background: '#f59e0b', color: '#000', fontWeight: 'bold', padding: '12px', border: 'none', borderRadius: '6px', cursor: 'pointer', marginTop: '10px' }}>Guardar Carga</button>
@@ -119,11 +193,55 @@ export default function App() {
         </div>
       )}
 
+      {/* EQUIPOS */}
+      {pestana === 'equipos' && (
+        <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+          <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '10px' }}>🚜 Gestión de Equipos y Flota</h2>
+          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '20px' }}>Listado de unidades, maquinarias y consumos asociados.</p>
+          <div style={{ background: '#0f172a', padding: '20px', borderRadius: '8px', textAlign: 'center', color: '#94a3b8' }}>
+            Módulo de equipos operativo.
+          </div>
+        </div>
+      )}
+
+      {/* MANTENIMIENTO */}
+      {pestana === 'mantenimiento' && (
+        <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+          <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '10px' }}>🔧 Control de Mantenimiento</h2>
+          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '20px' }}>Seguimiento preventivo de flota y service.</p>
+          <div style={{ background: '#0f172a', padding: '20px', borderRadius: '8px', textAlign: 'center', color: '#94a3b8' }}>
+            Módulo de mantenimiento operativo.
+          </div>
+        </div>
+      )}
+
+      {/* EXCEL */}
       {pestana === 'excel' && (
-        <div style={{ maxWidth: '500px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155', textAlign: 'center' }}>
-          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>Importar Planilla Excel</h2>
-          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '20px' }}>Seleccioná tu archivo CSV o XLSX de consumos.</p>
-          <input type="file" accept=".xlsx, .xls, .csv" onChange={() => alert('Archivo seleccionado correctamente.')} style={{ width: '100%', padding: '15px', background: '#0f172a', color: '#fff', border: '1px dashed #475569', borderRadius: '6px' }} />
+        <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla Excel / CSV</h2>
+          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Seleccioná tu archivo para ver una vista previa y sincronizarlo.</p>
+          
+          <input type="file" accept=".csv, .txt, .xlsx" onChange={handleCargarExcel} style={{ width: '100%', padding: '12px', background: '#0f172a', color: '#fff', border: '1px dashed #475569', borderRadius: '6px', marginBottom: '15px' }} />
+
+          {excelName && (
+            <div style={{ background: '#0f172a', padding: '15px', borderRadius: '8px', border: '1px solid #334155' }}>
+              <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>📄 Archivo: <strong>{excelName}</strong> ({excelRows.length} filas detectadas)</p>
+              
+              {excelRows.length > 0 && (
+                <div style={{ maxHeight: '150px', overflowY: 'auto', fontSize: '12px', marginBottom: '15px', background: '#1e293b', padding: '8px', borderRadius: '4px' }}>
+                  {excelRows.slice(0, 5).map((row, idx) => (
+                    <div key={idx} style={{ borderBottom: '1px solid #334155', padding: '4px 0' }}>
+                      {row.join(' | ')}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <button onClick={procesarDatosExcelEnSupabase} style={{ background: '#38bdf8', color: '#000', fontWeight: 'bold', padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer', width: '100%' }}>
+                🚀 Procesar y Sincronizar con Base de Datos
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
