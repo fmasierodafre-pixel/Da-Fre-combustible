@@ -20,7 +20,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [formCarga, setFormCarga] = useState({ tanque_id: '', equipo: '', litros: '', chofer: '', horometro_km: '' });
   
-  // Estado para el Excel
   const [excelRows, setExcelRows] = useState([]);
   const [excelName, setExcelName] = useState('');
 
@@ -67,7 +66,6 @@ export default function App() {
     }
   };
 
-  // Lector de archivos CSV / Texto plano de Excel
   const handleCargarExcel = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -88,7 +86,7 @@ export default function App() {
       alert('No hay datos para procesar.');
       return;
     }
-    alert(Se procesaron ${excelRows.length} filas del archivo "${excelName}". Listo para sincronizar con Supabase.);
+    alert('Archivo procesado correctamente. Listo para sincronizar con Supabase.');
   };
 
   return (
@@ -108,7 +106,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* DASHBOARD */}
       {pestana === 'dashboard' && (
         <div>
           <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Stock de Cisternas</h2>
@@ -158,7 +155,6 @@ export default function App() {
         </div>
       )}
 
-      {/* NUEVA CARGA */}
       {pestana === 'nueva_carga' && (
         <div style={{ maxWidth: '500px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h2 style={{ fontSize: '18px', marginBottom: '15px', color: '#f59e0b' }}>Registrar Carga de Combustible</h2>
@@ -193,7 +189,6 @@ export default function App() {
         </div>
       )}
 
-      {/* EQUIPOS */}
       {pestana === 'equipos' && (
         <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '10px' }}>🚜 Gestión de Equipos y Flota</h2>
@@ -204,7 +199,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MANTENIMIENTO */}
       {pestana === 'mantenimiento' && (
         <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '10px' }}>🔧 Control de Mantenimiento</h2>
@@ -215,7 +209,6 @@ export default function App() {
         </div>
       )}
 
-      {/* EXCEL */}
       {pestana === 'excel' && (
         <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla Excel / CSV</h2>
