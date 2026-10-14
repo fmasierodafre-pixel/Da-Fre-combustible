@@ -18,7 +18,6 @@ export default function App() {
   const [cargas, setCargas] = useState([]);
   const [pestana, setPestana] = useState('dashboard');
   const [loading, setLoading] = useState(false);
-  const [formCarga, setFormCarga] = useState({ tanque_id: '', equipo: '', litros: '', chofer: '', horometro_km: '' });
   
   const [excelRows, setExcelRows] = useState([]);
   const [excelName, setExcelName] = useState('');
@@ -44,30 +43,14 @@ export default function App() {
 
   async function fetchCargas() {
     try {
-      const { data, error } = await supabase.from('cargas').select('*').order('created_at', { ascending: false }).limit(20);
+      const { data, error } = await supabase.from('cargas_diarias').select('*').limit(20);
       if (!error && data) setCargas(data);
     } catch (err) {
       console.error(err);
     }
   }
 
-  const handleGuardarCarga = async (e) => {
-    e.preventDefault();
-    if (!supabase) return;
-    try {
-      const { error } = await supabase.from('cargas').insert([formCarga]);
-      if (error) throw error;
-      alert('¡Carga registrada con éxito!');
-      setFormCarga({ tanque_id: '', equipo: '', litros: '', chofer: '', horometro_km: '' });
-      setPestana('dashboard');
-      fetchTanques();
-      fetchCargas();
-    } catch (err) {
-      alert('Error al registrar: ' + err.message);
-    }
-  };
-
-  // Lector optimizado de CSV / Texto
+  // Lector de CSV / Texto
   const handleCargarExcel = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -83,7 +66,7 @@ export default function App() {
     reader.readAsText(file, 'UTF-8');
   };
 
-  // Subir datos a Supabase en lotes seguros
+  // Subir datos a la tabla real cargas_diarias en Supabase
   const procesarDatosExcelEnSupabase = async () => {
     if (!supabase) {
       alert('Supabase no está conectado.');
@@ -96,24 +79,24 @@ export default function App() {
 
     setSubiendoExcel(true);
     try {
-      // Omitimos la primera fila de encabezados
+      // Omitimos la primera fila de encabezados y adaptamos a las columnas reales de cargas_diarias
       const filasAInsertar = excelRows.slice(1).map(row => ({
-        equipo: row[0] ? String(row[0]) : 'Sin especificar',
-        litros: parseFloat(row[1]) || 0,
-        chofer: row[2] ? String(row[2]) : '',
-        horometro_km: row[3] ? String(row[3]) : ''
-      })).filter(item => item.litros > 0);
+        semana: row[0] ? String(row[0]) : '',
+        fecha: row[1] ? String(row[1]) : new Date().toISOString().split('T')[0],
+        tipo_movimiento: row[2] ? String(row[2]) : '',
+        origen: row[3] ? String(row[3]) : ''
+      })).filter(item => item.semana !== '' || item.tipo_movimiento !== '');
 
       if (filasAInsertar.length === 0) {
-        alert('No se encontraron filas con litros válidos. Verificá que el archivo tenga el formato correcto.');
+        alert('No se encontraron registros válidos para insertar.');
         setSubiendoExcel(false);
         return;
       }
 
-      const { error } = await supabase.from('cargas').insert(filasAInsertar);
+      const { error } = await supabase.from('cargas_diarias').insert(filasAInsertar);
       if (error) throw error;
 
-      alert(¡Se subieron exitosamente ${filasAInsertar.length} registros a Supabase!);
+      alert(¡Se subieron exitosamente ${filasAInsertar.length} registros a la tabla cargas_diarias!);
       setExcelRows([]);
       setExcelName('');
       setPestana('dashboard');
@@ -128,12 +111,11 @@ export default function App() {
     <div style={{ minHeight: '100vh', backgroundColor: '#0f172a', color: '#fff', padding: '20px', fontFamily: 'sans-serif' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #334155', paddingBottom: '15px', marginBottom: '20px', flexWrap: 'wrap', gap: '15px' }}>
         <div>
-          <h1 style={{ fontSize: '22px', fontWeight: 'bold', color: '#f59e0b', margin: 0 }}>⛽ DA FRE - Combustibles</h1>
-          <p style={{ color: '#94a3b8', fontSize: '13px', margin: '5px 0 0 0' }}>Gestión Integral de Flota, Cisternas y Mantenimiento</p>
+          <h1 style={{ fontSize: '22px', fontWeight: 'bold', color: '#f59e0b', margin: 0 }}>⛽ DA FRE - Combustibles y Flota</h1>
+          <p style={{ color: '#94a3b8', fontSize: '13px', margin: '5px 0 0 0' }}>Gestión Integral - DA FRE</p>
         </div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <button onClick={() => setPestana('dashboard')} style={{ background: pestana === 'dashboard' ? '#f59e0b' : '#1e293b', color: pestana === 'dashboard' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>📊 Dashboard</button>
-          <button onClick={() => setPestana('nueva_carga')} style={{ background: pestana === 'nueva_carga' ? '#f59e0b' : '#1e293b', color: pestana === 'nueva_carga' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>➕ Nueva Carga</button>
           <button onClick={() => setPestana('equipos')} style={{ background: pestana === 'equipos' ? '#f59e0b' : '#1e293b', color: pestana === 'equipos' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>🚜 Equipos</button>
           <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#f59e0b' : '#1e293b', color: pestana === 'mantenimiento' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>🔧 Mantenimiento</button>
           <button onClick={() => setPestana('excel')} style={{ background: pestana === 'excel' ? '#f59e0b' : '#1e293b', color: pestana === 'excel' ? '#000' : '#fff', border: '1px solid #475569', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>📁 Excel</button>
@@ -160,67 +142,33 @@ export default function App() {
             )}
           </div>
 
-          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Últimas Cargas Registradas</h2>
+          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Registros en Cargas Diarias</h2>
           <div style={{ backgroundColor: '#1e293b', borderRadius: '12px', border: '1px solid #334155', overflow: 'hidden' }}>
             {cargas.length > 0 ? (
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8' }}>
-                    <th style={{ padding: '12px' }}>Equipo</th>
-                    <th style={{ padding: '12px' }}>Litros</th>
-                    <th style={{ padding: '12px' }}>Chofer</th>
-                    <th style={{ padding: '12px' }}>Km / Horómetro</th>
+                    <th style={{ padding: '12px' }}>Semana</th>
+                    <th style={{ padding: '12px' }}>Fecha</th>
+                    <th style={{ padding: '12px' }}>Tipo Movimiento</th>
+                    <th style={{ padding: '12px' }}>Origen</th>
                   </tr>
                 </thead>
                 <tbody>
                   {cargas.map((c, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
-                      <td style={{ padding: '12px', fontWeight: 'bold' }}>{c.equipo}</td>
-                      <td style={{ padding: '12px', color: '#f59e0b' }}>{c.litros} L</td>
-                      <td style={{ padding: '12px' }}>{c.chofer || '-'}</td>
-                      <td style={{ padding: '12px' }}>{c.horometro_km || '-'}</td>
+                      <td style={{ padding: '12px', fontWeight: 'bold' }}>{c.semana || '-'}</td>
+                      <td style={{ padding: '12px', color: '#f59e0b' }}>{c.fecha || '-'}</td>
+                      <td style={{ padding: '12px' }}>{c.tipo_movimiento || '-'}</td>
+                      <td style={{ padding: '12px' }}>{c.origen || '-'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             ) : (
-              <div style={{ padding: '30px', textAlign: 'center', color: '#94a3b8' }}>No hay registros de cargas recientes.</div>
+              <div style={{ padding: '30px', textAlign: 'center', color: '#94a3b8' }}>No hay registros en cargas_diarias todavía. Subí tu archivo para empezar.</div>
             )}
           </div>
-        </div>
-      )}
-
-      {pestana === 'nueva_carga' && (
-        <div style={{ maxWidth: '500px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
-          <h2 style={{ fontSize: '18px', marginBottom: '15px', color: '#f59e0b' }}>Registrar Carga de Combustible</h2>
-          <form onSubmit={handleGuardarCarga} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div>
-              <label style={{ fontSize: '13px', color: '#cbd5e1' }}>Cisterna de Origen</label>
-              <select value={formCarga.tanque_id} onChange={e => setFormCarga({...formCarga, tanque_id: e.target.value})} required style={{ width: '100%', padding: '10px', background: '#0f172a', color: '#fff', border: '1px solid #475569', borderRadius: '6px' }}>
-                <option value="">Seleccionar...</option>
-                {tanques.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: '13px', color: '#cbd5e1' }}>Equipo / Vehículo</label>
-              <input type="text" placeholder="Ej: Camión Scania" value={formCarga.equipo} onChange={e => setFormCarga({...formCarga, equipo: e.target.value})} required style={{ width: '100%', padding: '10px', background: '#0f172a', color: '#fff', border: '1px solid #475569', borderRadius: '6px' }} />
-            </div>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: '13px', color: '#cbd5e1' }}>Litros</label>
-                <input type="number" placeholder="250" value={formCarga.litros} onChange={e => setFormCarga({...formCarga, litros: e.target.value})} required style={{ width: '100%', padding: '10px', background: '#0f172a', color: '#fff', border: '1px solid #475569', borderRadius: '6px' }} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: '13px', color: '#cbd5e1' }}>Horómetro / Km</label>
-                <input type="number" placeholder="145000" value={formCarga.horometro_km} onChange={e => setFormCarga({...formCarga, horometro_km: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', color: '#fff', border: '1px solid #475569', borderRadius: '6px' }} />
-              </div>
-            </div>
-            <div>
-              <label style={{ fontSize: '13px', color: '#cbd5e1' }}>Chofer / Responsable</label>
-              <input type="text" placeholder="Nombre" value={formCarga.chofer} onChange={e => setFormCarga({...formCarga, chofer: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', color: '#fff', border: '1px solid #475569', borderRadius: '6px' }} />
-            </div>
-            <button type="submit" style={{ background: '#f59e0b', color: '#000', fontWeight: 'bold', padding: '12px', border: 'none', borderRadius: '6px', cursor: 'pointer', marginTop: '10px' }}>Guardar Carga</button>
-          </form>
         </div>
       )}
 
@@ -246,8 +194,8 @@ export default function App() {
 
       {pestana === 'excel' && (
         <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
-          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla CSV</h2>
-          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Seleccioná tu archivo CSV (exportado de tu Excel) para subir los registros a Supabase.</p>
+          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>📁 Importar Planilla CSV a "cargas_diarias"</h2>
+          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Seleccioná tu archivo CSV para subir los registros directamente a Supabase.</p>
           
           <input type="file" accept=".csv, .txt" onChange={handleCargarExcel} style={{ width: '100%', padding: '12px', background: '#0f172a', color: '#fff', border: '1px dashed #475569', borderRadius: '6px', marginBottom: '15px' }} />
 
