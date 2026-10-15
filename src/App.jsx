@@ -27,7 +27,7 @@ export default function App() {
   const [filtroMes, setFiltroMes] = useState('');
   const [filtroDia, setFiltroDia] = useState('');
 
-  // Filtros interactivos para el Dashboard (Gráfico de barras y stock)
+  // Filtros interactivos para el Dashboard
   const [dashAnio, setDashAnio] = useState('');
   const [dashMes, setDashMes] = useState('');
   const [dashObra, setDashObra] = useState('');
@@ -80,38 +80,72 @@ export default function App() {
       if (mantData) {
         setMantenimientos(mantData);
       }
-      if (tanquesData) {
-        calcularStockTanques(tanquesData, cargasData || []);
-      }
+
+      // Procesar stock de cisternas
+      const listaTanquesBase = (tanquesData && tanquesData.length > 0) ? tanquesData : [
+        { id: 1, nombre: 'Cisterna Principal (PPL)', capacidad_l: 8500 },
+        { id: 2, nombre: 'Cisterna Camión', capacidad_l: 4000 },
+        { id: 3, nombre: 'PLAASF', capacidad_l: 2000 }
+      ];
+
+      calcularStockTanques(listaTanquesBase, cargasData || []);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
 
-  function calcularStockTanques(tanquesData, cargasData) {
-    const tanquesCalculados = tanquesData.map(t => {
-      const capacidad = parseFloat(t.capacidad_l || t.stock_actual_l || 8500);
+  function calcularStockTanques(tanquesBase, cargasData) {
+    const tanquesCalculados = tanquesBase.map(t => {
+      const capacidad = parseFloat(t.capacidad_l || t.stock_actual_l || 0);
       let totalSalidas = 0;
       let totalEntradas = 0;
-      const nombreTanque = t.nombre.toLowerCase();
+      const nombreTanque = (t.nombre || '').toLowerCase();
 
       cargasData.forEach(c => {
-        const litros = parseFloat(c['Litros Indicados'] || 0);
+        const litros = parseFloat(c['Litros Indicados'] || c['Litros Reales'] || 0);
         const origenCarga = (c.Origen || '').toLowerCase();
-        
-        // Coincidencia flexible de origen
-        if (origenCarga.includes(nombreTanque) || (nombreTanque.includes('principal') && origenCarga.includes('ppl'))) {
-          if (c['Tipo Movimiento'] === 'Consumo' || c['Tipo Movimiento'] === 'Transferencia') {
+        const tipoMov = (c['Tipo Movimiento'] || '').toLowerCase();
+
+        // 1. COMPRAS E INGRESOS DIRECTOS (IPF)
+        if (tipoMov.includes('compra') || tipoMov.includes('ingreso')) {
+          if (origenCarga.includes(nombreTanque) || (nombreTanque.includes('principal') && (origenCarga.includes('ppl') || origenCarga.includes('ipf')))) {
+            totalEntradas += litros;
+          }
+        }
+
+        // 2. TRANSFERENCIAS
+        if (tipoMov.includes('transferencia')) {
+          if (nombreTanque.includes('principal') || nombreTanque.includes('ppl')) {
+            totalSalidas += litros; // Sale de la principal
+          }
+          if (nombreTanque.includes('camión') || nombreTanque.includes('camion')) {
+            totalEntradas += litros; // Ingresa al camión de reparto
+          }
+        }
+
+        // 3. CONSUMOS
+        if (tipoMov.includes('consumo')) {
+          if (origenCarga.includes(nombreTanque) || 
+             (nombreTanque.includes('principal') && origenCarga.includes('ppl')) ||
+             (nombreTanque.includes('camión') && (origenCarga.includes('camion') || origenCarga === ''))) {
             totalSalidas += litros;
           }
         }
-        if (c['Tipo Movimiento'] === 'Compra' && (origenCarga.includes(nombreTanque) || (nombreTanque.includes('principal') && origenCarga.includes('ppl')))) {
-          totalEntradas += litros;
-        }
       });
 
-      const stockReal = Math.max(0, capacidad - totalSalidas + totalEntradas);
-      return { ...t, stock_real: stockReal, capacidad: capacidad };
+      // Cálculo de stock actual: Compras/Ingresos - Salidas
+      // Si aún no se registraron las compras iniciales en la base de datos, mostramos el saldo balanceado
+      const saldoCalculado = totalEntradas - totalSalidas;
+      const stockReal = totalEntradas > 0 ? Math.max(0, saldoCalculado) : Math.max(0, capacidad - totalSalidas);
+
+      return { 
+        ...t, 
+        stock_real: stockReal, 
+        capacidad: capacidad, 
+        totalEntradas, 
+        totalSalidas 
+      };
     });
+
     setTanques(tanquesCalculados);
   }
 
@@ -119,7 +153,7 @@ export default function App() {
     const equiposMap = {};
     cargasArray.forEach(c => {
       const eqCode = c.Equipo || c['Destino / Equipo'];
-      if (eqCode && !equiposMap[eqCode]) {
+      if (eqCode && !eqCode.toLowerCase().includes('cisterna') && !eqCode.toLowerCase().includes('plaasf') && !eqCode.toLowerCase().includes('ppl') && !equiposMap[eqCode]) {
         const esMaquina = eqCode.startsWith('M') || eqCode.startsWith('CAT') || eqCode.startsWith('P');
         equiposMap[eqCode] = {
           codigo: eqCode,
@@ -286,26 +320,30 @@ export default function App() {
   // Filtrado interactivo para el Dashboard (Gráfico de barras)
   const cargasDashboardFiltradas = todasLasCargas.filter(c => {
     if (!c.Fecha) return true;
-    const anioCarga = c.Fecha.split('-')[0] || '';
-    const mesCarga = c.Fecha.split('-')[1] || '';
+    const fechaCarga = c.Fecha.split('T')[0];
+    const anioCarga = fechaCarga.split('-')[0] || '';
+    const mesCarga = fechaCarga.split('-')[1] || '';
     
     const matchAnio = dashAnio ? anioCarga === dashAnio : true;
-    const matchMes = dashMes ? mesCarga === dashMes : true;
+    const matchMes = dashMes ? mesCarga === dashMes || mesCarga === `0${dashMes}`.slice(-2) : true;
     const matchObra = dashObra ? (c.Obra || '').toLowerCase().includes(dashObra.toLowerCase()) : true;
     
     let matchRango = true;
-    if (dashDesde && c.Fecha < dashDesde) matchRango = false;
-    if (dashHasta && c.Fecha > dashHasta) matchRango = false;
+    if (dashDesde && fechaCarga < dashDesde) matchRango = false;
+    if (dashHasta && fechaCarga > dashHasta) matchRango = false;
 
     return matchAnio && matchMes && matchObra && matchRango;
   });
 
-  // Consumo por máquina ordenado de mayor a menor para barras horizontales
+  // Consumo por máquina ordenado de mayor a menor (Excluyendo cisternas y tanques)
   const consumoPorVehiculoDash = {};
   cargasDashboardFiltradas.forEach(c => {
     const eq = c.Equipo || c['Destino / Equipo'] || 'Sin Asignar';
-    const litros = parseFloat(c['Litros Indicados'] || 0);
-    consumoPorVehiculoDash[eq] = (consumoPorVehiculoDash[eq] || 0) + litros;
+    const eqUpper = eq.toUpperCase();
+    if (!eqUpper.includes('CISTERNA') && !eqUpper.includes('PLAASF') && !eqUpper.includes('PPL')) {
+      const litros = parseFloat(c['Litros Indicados'] || c['Litros Reales'] || 0);
+      consumoPorVehiculoDash[eq] = (consumoPorVehiculoDash[eq] || 0) + litros;
+    }
   });
 
   const consumoOrdenado = Object.entries(consumoPorVehiculoDash).sort((a, b) => b[1] - a[1]);
@@ -365,18 +403,22 @@ export default function App() {
       {pestana === 'dashboard' && (
         <div>
           <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Stock Actual en Cisternas (Litros Reales)</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '15px', marginBottom: '30px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '15px', marginBottom: '30px' }}>
             {tanques.length > 0 ? (
               tanques.map(t => (
                 <div key={t.id} style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
                   <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', color: '#38bdf8' }}>{t.nombre}</h3>
                   <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#4ade80' }}>{t.stock_real.toFixed(0)} Lts</div>
                   <p style={{ fontSize: '12px', color: '#94a3b8', margin: '6px 0 0 0' }}>Capacidad: {t.capacidad} Lts</p>
+                  <div style={{ fontSize: '11px', color: '#f59e0b', marginTop: '6px', borderTop: '1px solid #334155', paddingTop: '6px' }}>
+                    Ingresos (IPF/Transf): +{t.totalEntradas.toFixed(0)} L<br/>
+                    Salidas (Consumos/Transf): -{t.totalSalidas.toFixed(0)} L
+                  </div>
                 </div>
               ))
             ) : (
               <div style={{ gridColumn: '1 / -1', padding: '20px', textAlign: 'center', backgroundColor: '#1e293b', borderRadius: '8px', color: '#94a3b8' }}>
-                Calculando stock...
+                Calculando stock de cisternas...
               </div>
             )}
           </div>
@@ -479,7 +521,7 @@ export default function App() {
                       <td style={{ padding: '12px' }}>{c.Origen || '-'}</td>
                       <td style={{ padding: '12px', fontWeight: 'bold' }}>{c.Equipo || '-'}</td>
                       <td style={{ padding: '12px' }}>{c.Chofer || '-'}</td>
-                      <td style={{ padding: '12px', fontWeight: 'bold', color: '#f59e0b' }}>{c['Litros Indicados'] || 0} L</td>
+                      <td style={{ padding: '12px', fontWeight: 'bold', color: '#f59e0b' }}>{c['Litros Indicados'] || c['Litros Reales'] || 0} L</td>
                       <td style={{ padding: '12px' }}>{c.Obra || '-'}</td>
                     </tr>
                   ))
@@ -508,7 +550,7 @@ export default function App() {
               <select value={formCarga["Tipo Movimiento"]} onChange={e => setFormCarga({...formCarga, "Tipo Movimiento": e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
                 <option value="Consumo">Consumo</option>
                 <option value="Transferencia">Transferencia (Cisterna PPL -&gt; Camión)</option>
-                <option value="Compra">Compra / Ingreso</option>
+                <option value="Compra">Compra / Ingreso (IPF)</option>
               </select>
             </div>
             <div>
@@ -517,6 +559,7 @@ export default function App() {
                 <option value="Cisterna Camión">Cisterna Camión (Reparto)</option>
                 <option value="Cisterna Principal (PPL)">Cisterna Principal (PPL)</option>
                 <option value="PLAASF">PLAASF</option>
+                <option value="IPF / Compra Directa">IPF / Compra Directa</option>
               </select>
             </div>
             <div>
