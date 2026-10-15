@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Credenciales directas y configuradas para tu proyecto DA FRE en Supabase
+const supabaseUrl = 'https://vlllvmklgokwwuvnasuo.supabase.co';
+const supabaseKey = 'sb_publishable_NsUMTJQgmhifHhOu48Et2w_RMEvR...'; // ⚠️ Reemplaza con tu Publishable key completa si quedó truncada en la captura
 
 let supabase = null;
-if (supabaseUrl && supabaseAnonKey) {
+if (supabaseUrl && supabaseKey) {
   try {
-    supabase = createClient(supabaseUrl, supabaseAnonKey);
+    supabase = createClient(supabaseUrl, supabaseKey);
   } catch (e) {
     console.error('Error Supabase:', e);
   }
@@ -22,17 +23,17 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const [formCarga, setFormCarga] = useState({
-    fecha: new Date().toISOString().split('T')[0],
-    tipo_movimiento: 'Consumo',
-    origen: 'Cisterna Principal (PPL)',
-    equipo_codigo: '',
-    chofer: '',
-    obra: 'RN40',
-    tipo_combustible: 'Infinia Diesel',
-    litros_indicados: '',
-    horometro: '',
-    kilometros: '',
-    observaciones: ''
+    Fecha: new Date().toISOString().split('T')[0],
+    "Tipo Movimiento": 'Consumo',
+    Origen: 'Cisterna Principal (PPL)',
+    Equipo: '',
+    Chofer: '',
+    Obra: 'RN40',
+    "Tipo Combustible": 'Infinia Diesel',
+    "Litros Indicados": '',
+    Orometro: '',
+    Kilometros: '',
+    Observaciones: ''
   });
 
   const [excelRows, setExcelRows] = useState([]);
@@ -86,17 +87,17 @@ export default function App() {
       if (error) throw error;
       alert('¡Carga registrada con éxito en Supabase!');
       setFormCarga({
-        fecha: new Date().toISOString().split('T')[0],
-        tipo_movimiento: 'Consumo',
-        origen: 'Cisterna Principal (PPL)',
-        equipo_codigo: '',
-        chofer: '',
-        obra: 'RN40',
-        tipo_combustible: 'Infinia Diesel',
-        litros_indicados: '',
-        horometro: '',
-        kilometros: '',
-        observaciones: ''
+        Fecha: new Date().toISOString().split('T')[0],
+        "Tipo Movimiento": 'Consumo',
+        Origen: 'Cisterna Principal (PPL)',
+        Equipo: '',
+        Chofer: '',
+        Obra: 'RN40',
+        "Tipo Combustible": 'Infinia Diesel',
+        "Litros Indicados": '',
+        Orometro: '',
+        Kilometros: '',
+        Observaciones: ''
       });
       setPestana('dashboard');
       fetchCargas();
@@ -196,7 +197,7 @@ export default function App() {
               ))
             ) : (
               <div style={{ gridColumn: '1 / -1', padding: '20px', textAlign: 'center', backgroundColor: '#1e293b', borderRadius: '8px', color: '#94a3b8' }}>
-                Cargando cisternas desde Supabase o tabla vacía...
+                Cargando cisternas desde Supabase...
               </div>
             )}
           </div>
@@ -220,13 +221,13 @@ export default function App() {
                   <tbody>
                     {cargas.map((c, i) => (
                       <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
-                        <td style={{ padding: '12px' }}>{c.Fecha || c.fecha || '-'}</td>
-                        <td style={{ padding: '12px', color: c['Tipo Movimiento'] === 'Compra' ? '#4ade80' : '#38bdf8' }}>{c['Tipo Movimiento'] || c.tipo_movimiento || '-'}</td>
-                        <td style={{ padding: '12px' }}>{c.Origen || c.origen || '-'}</td>
-                        <td style={{ padding: '12px', fontWeight: 'bold' }}>{c.Equipo || c.equipo_codigo || '-'}</td>
-                        <td style={{ padding: '12px' }}>{c.Chofer || c.chofer || '-'}</td>
-                        <td style={{ padding: '12px', fontWeight: 'bold', color: '#f59e0b' }}>{c['Litros Indicados'] || c.litros_indicados || 0} L</td>
-                        <td style={{ padding: '12px' }}>{c.Obra || c.obra || '-'}</td>
+                        <td style={{ padding: '12px' }}>{c.Fecha || '-'}</td>
+                        <td style={{ padding: '12px', color: c['Tipo Movimiento'] === 'Compra' ? '#4ade80' : '#38bdf8' }}>{c['Tipo Movimiento'] || '-'}</td>
+                        <td style={{ padding: '12px' }}>{c.Origen || '-'}</td>
+                        <td style={{ padding: '12px', fontWeight: 'bold' }}>{c.Equipo || '-'}</td>
+                        <td style={{ padding: '12px' }}>{c.Chofer || '-'}</td>
+                        <td style={{ padding: '12px', fontWeight: 'bold', color: '#f59e0b' }}>{c['Litros Indicados'] || 0} L</td>
+                        <td style={{ padding: '12px' }}>{c.Obra || '-'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -247,11 +248,11 @@ export default function App() {
           <form onSubmit={handleGuardarCargaManual} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '15px' }}>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Fecha</label>
-              <input type="date" value={formCarga.fecha} onChange={e => setFormCarga({...formCarga, fecha: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
+              <input type="date" value={formCarga.Fecha} onChange={e => setFormCarga({...formCarga, Fecha: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Tipo de Movimiento</label>
-              <select value={formCarga.tipo_movimiento} onChange={e => setFormCarga({...formCarga, tipo_movimiento: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
+              <select value={formCarga["Tipo Movimiento"]} onChange={e => setFormCarga({...formCarga, "Tipo Movimiento": e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
                 <option value="Consumo">Consumo</option>
                 <option value="Compra">Compra</option>
                 <option value="Transferencia">Transferencia</option>
@@ -259,23 +260,23 @@ export default function App() {
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Origen / Cisterna</label>
-              <input type="text" value={formCarga.origen} onChange={e => setFormCarga({...formCarga, origen: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
+              <input type="text" value={formCarga.Origen} onChange={e => setFormCarga({...formCarga, Origen: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Código de Equipo</label>
-              <input type="text" placeholder="Ej: CAM551" value={formCarga.equipo_codigo} onChange={e => setFormCarga({...formCarga, equipo_codigo: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
+              <input type="text" placeholder="Ej: CAM551" value={formCarga.Equipo} onChange={e => setFormCarga({...formCarga, Equipo: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Chofer / Responsable</label>
-              <input type="text" placeholder="Nombre" value={formCarga.chofer} onChange={e => setFormCarga({...formCarga, chofer: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
+              <input type="text" placeholder="Nombre" value={formCarga.Chofer} onChange={e => setFormCarga({...formCarga, Chofer: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Obra</label>
-              <input type="text" value={formCarga.obra} onChange={e => setFormCarga({...formCarga, obra: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
+              <input type="text" value={formCarga.Obra} onChange={e => setFormCarga({...formCarga, Obra: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Tipo Combustible</label>
-              <select value={formCarga.tipo_combustible} onChange={e => setFormCarga({...formCarga, tipo_combustible: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
+              <select value={formCarga["Tipo Combustible"]} onChange={e => setFormCarga({...formCarga, "Tipo Combustible": e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
                 <option value="Infinia Diesel">Infinia Diesel</option>
                 <option value="Diesel 500">Diesel 500</option>
                 <option value="Nafta">Nafta</option>
@@ -283,7 +284,7 @@ export default function App() {
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Litros</label>
-              <input type="number" placeholder="150" value={formCarga.litros_indicados} onChange={e => setFormCarga({...formCarga, litros_indicados: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
+              <input type="number" placeholder="150" value={formCarga["Litros Indicados"]} onChange={e => setFormCarga({...formCarga, "Litros Indicados": e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
             </div>
             <div style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
               <button type="submit" style={{ background: '#f59e0b', color: '#000', border: 'none', padding: '12px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>Guardar Carga</button>
