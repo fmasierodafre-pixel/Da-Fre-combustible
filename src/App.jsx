@@ -23,12 +23,10 @@ export default function App() {
   const [pestana, setPestana] = useState('dashboard');
   const [loading, setLoading] = useState(false);
 
-  // Filtros de fecha para el historial
   const [filtroAnio, setFiltroAnio] = useState('');
   const [filtroMes, setFiltroMes] = useState('');
   const [filtroDia, setFiltroDia] = useState('');
 
-  // Formulario Carga Manual
   const [formCarga, setFormCarga] = useState({
     Fecha: new Date().toISOString().split('T')[0],
     "Tipo Movimiento": 'Consumo',
@@ -43,13 +41,8 @@ export default function App() {
     Observaciones: ''
   });
 
-  // Formulario Nuevo Chofer
   const [nuevoChofer, setNuevoChofer] = useState({ nombre: '', equipo_habitual: '' });
-
-  // Formulario Nuevo Equipo
   const [nuevoEquipo, setNuevoEquipo] = useState({ codigo: '', descripcion: '', tipo: 'Máquina', obra_predeterminada: 'RN40', tipo_combustible: 'Infinia Diesel' });
-
-  // Formulario Registro Service Mantenimiento
   const [formService, setFormService] = useState({ codigo_equipo: '', hm_km_actual: '', tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
 
   const [excelRows, setExcelRows] = useState([]);
@@ -155,7 +148,6 @@ export default function App() {
     } catch (e) { console.error(e); }
   }
 
-  // Cambio dinámico en formulario de Carga al elegir un Equipo
   const handleSeleccionEquipoForm = (codigoEq) => {
     const eqEncontrado = equipos.find(e => e.codigo === codigoEq);
     const choferAsignado = choferes.find(ch => ch.equipo_habitual === codigoEq);
@@ -294,7 +286,6 @@ export default function App() {
     setSubiendoExcel(false);
   };
 
-  // Filtrado de cargas para el historial
   const cargasFiltradas = todasLasCargas.filter(c => {
     if (!c.Fecha) return true;
     const matchAnio = filtroAnio ? c.Fecha.includes(filtroAnio) : true;
@@ -303,7 +294,6 @@ export default function App() {
     return matchAnio && matchMes && matchDia;
   });
 
-  // Consumos acumulados por equipo
   const consumoPorVehiculo = {};
   todasLasCargas.forEach(c => {
     const eq = c.Equipo || c['Destino / Equipo'] || 'Sin Asignar';
@@ -311,7 +301,6 @@ export default function App() {
     consumoPorVehiculo[eq] = (consumoPorVehiculo[eq] || 0) + litros;
   });
 
-  // Obtener último orómetro/kilómetro de cada vehículo para Mantenimiento
   const estadoMantenimientoEquipos = equipos.map(eq => {
     const cargasEq = todasLasCargas.filter(c => (c.Equipo === eq.codigo || c['Destino / Equipo'] === eq.codigo));
     let ultimoLectura = 0;
@@ -321,7 +310,7 @@ export default function App() {
     });
 
     const esMaquina = eq.tipo === 'Máquina' || eq.codigo.startsWith('M') || eq.codigo.startsWith('CAT') || eq.codigo.startsWith('P');
-    const intervaloService = esMaquina ? 250 : 400; // 250hs máquinas, 400km camiones
+    const intervaloService = esMaquina ? 250 : 400;
 
     const serviceRegistrado = mantenimientos.find(m => m.codigo_equipo === eq.codigo);
     const ultimoServiceLectura = serviceRegistrado ? parseFloat(serviceRegistrado.ultimo_hm_km || 0) : 0;
@@ -369,7 +358,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* DASHBOARD */}
       {pestana === 'dashboard' && (
         <div>
           <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Stock Actual en Cisternas (Litros Reales)</h2>
@@ -443,7 +431,6 @@ export default function App() {
         </div>
       )}
 
-      {/* HISTORIAL Y FILTROS */}
       {pestana === 'historial' && (
         <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>Historial Completo y Filtros por Fecha</h2>
@@ -503,7 +490,6 @@ export default function App() {
         </div>
       )}
 
-      {/* NUEVA CARGA MANUAL */}
       {pestana === 'nueva_carga' && (
         <div style={{ maxWidth: '650px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h2 style={{ fontSize: '18px', marginBottom: '20px', color: '#f59e0b' }}>+ Registrar Nueva Carga Manual</h2>
@@ -554,4 +540,166 @@ export default function App() {
                 <option value="RN40">RN40</option>
                 <option value="CANTERA">CANTERA</option>
                 <option value="PLANTA ÁRIDOS">PLANTA ÁRIDOS</option>
-                <option value="OBRA VIAL">OBRA VIAL</
+                <option value="OBRA VIAL">OBRA VIAL</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Tipo Combustible</label>
+              <select value={formCarga["Tipo Combustible"]} onChange={e => setFormCarga({...formCarga, "Tipo Combustible": e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
+                <option value="Infinia Diesel">Infinia Diesel</option>
+                <option value="Diesel 500">Diesel 500</option>
+                <option value="Nafta">Nafta</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Litros Cargados</label>
+              <input type="number" placeholder="Ej: 150" value={formCarga["Litros Indicados"]} onChange={e => setFormCarga({...formCarga, "Litros Indicados": e.target.value})} style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
+            </div>
+            <div style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
+              <button type="submit" style={{ background: '#f59e0b', color: '#000', border: 'none', padding: '12px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>Guardar Carga</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {pestana === 'equipos' && (
+        <div style={{ maxWidth: '900px', margin: '0 auto' }}>
+          <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '25px' }}>
+            <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>+ Agregar Nuevo Equipo / Vehículo</h2>
+            <form onSubmit={handleGuardarEquipo} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+              <input type="text" placeholder="Código (Ej: M048)" value={nuevoEquipo.codigo} onChange={e => setNuevoEquipo({...nuevoEquipo, codigo: e.target.value})} style={{ padding: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+              <input type="text" placeholder="Descripción (Ej: Excavadora CAT)" value={nuevoEquipo.descripcion} onChange={e => setNuevoEquipo({...nuevoEquipo, descripcion: e.target.value})} style={{ padding: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+              <select value={nuevoEquipo.tipo} onChange={e => setNuevoEquipo({...nuevoEquipo, tipo: e.target.value})} style={{ padding: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }}>
+                <option value="Máquina">Máquina (Service c/250 hs)</option>
+                <option value="Camión / Vehículo">Camión / Vehículo (Service c/400 km)</option>
+              </select>
+              <button type="submit" style={{ background: '#4ade80', color: '#000', border: 'none', padding: '8px 15px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar Equipo</button>
+            </form>
+          </div>
+
+          <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+            <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '15px' }}>Flota Completa Registrada ({equipos.length})</h2>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8' }}>
+                  <th style={{ padding: '10px' }}>Código</th>
+                  <th style={{ padding: '10px' }}>Descripción</th>
+                  <th style={{ padding: '10px' }}>Tipo</th>
+                  <th style={{ padding: '10px' }}>Obra Predeterminada</th>
+                </tr>
+              </thead>
+              <tbody>
+                {equipos.map((eq, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                    <td style={{ padding: '10px', fontWeight: 'bold', color: '#f59e0b' }}>{eq.codigo}</td>
+                    <td style={{ padding: '10px' }}>{eq.descripcion || '-'}</td>
+                    <td style={{ padding: '10px' }}>{eq.tipo || 'Máquina'}</td>
+                    <td style={{ padding: '10px', color: '#38bdf8' }}>{eq.obra_predeterminada || 'RN40'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {pestana === 'choferes' && (
+        <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+          <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '25px' }}>
+            <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>+ Registrar Nuevo Chofer</h2>
+            <form onSubmit={handleGuardarChofer} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+              <input type="text" placeholder="Nombre Completo" value={nuevoChofer.nombre} onChange={e => setNuevoChofer({...nuevoChofer, nombre: e.target.value})} style={{ padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+              <input type="text" placeholder="Equipo Habitual (Ej: M047)" value={nuevoChofer.equipo_habitual} onChange={e => setNuevoChofer({...nuevoChofer, equipo_habitual: e.target.value})} style={{ padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+              <button type="submit" style={{ background: '#4ade80', color: '#000', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar Chofer</button>
+            </form>
+          </div>
+
+          <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+            <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '15px' }}>Nómina de Choferes</h2>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8' }}>
+                  <th style={{ padding: '10px' }}>Nombre</th>
+                  <th style={{ padding: '10px' }}>Equipo Asignado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {choferes.map((ch, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                    <td style={{ padding: '10px', fontWeight: 'bold' }}>{ch.nombre}</td>
+                    <td style={{ padding: '10px', color: '#f59e0b' }}>{ch.equipo_habitual || 'Sin Asignar'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {pestana === 'mantenimiento' && (
+        <div style={{ maxWidth: '950px', margin: '0 auto' }}>
+          <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '25px' }}>
+            <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>🛠️ Registrar Service Realizado</h2>
+            <form onSubmit={handleRegistrarService} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+              <select value={formService.codigo_equipo} onChange={e => setFormService({...formService, codigo_equipo: e.target.value})} style={{ padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }}>
+                <option value="">Seleccionar Equipo...</option>
+                {equipos.map((e, i) => <option key={i} value={e.codigo}>{e.codigo} - {e.descripcion}</option>)}
+              </select>
+              <input type="number" placeholder="Horómetro / Km del Service" value={formService.hm_km_actual} onChange={e => setFormService({...formService, hm_km_actual: e.target.value})} style={{ padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+              <input type="text" placeholder="Detalles (Ej: Filtro aceite, aire)" value={formService.observaciones} onChange={e => setFormService({...formService, observaciones: e.target.value})} style={{ padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+              <button type="submit" style={{ background: '#f59e0b', color: '#000', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar Service</button>
+            </form>
+          </div>
+
+          <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+            <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '15px' }}>Control de Mantenimiento Preventivo</h2>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8', backgroundColor: '#0f172a' }}>
+                    <th style={{ padding: '10px' }}>Equipo</th>
+                    <th style={{ padding: '10px' }}>Tipo</th>
+                    <th style={{ padding: '10px' }}>Última Lectura</th>
+                    <th style={{ padding: '10px' }}>Último Service</th>
+                    <th style={{ padding: '10px' }}>Intervalo</th>
+                    <th style={{ padding: '10px' }}>Estado Preventivo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {estadoMantenimientoEquipos.map((m, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '10px', fontWeight: 'bold' }}>{m.codigo}</td>
+                      <td style={{ padding: '10px' }}>{m.tipo}</td>
+                      <td style={{ padding: '10px', fontWeight: 'bold' }}>{m.ultimoLectura} hs/km</td>
+                      <td style={{ padding: '10px' }}>{m.ultimoServiceLectura} hs/km</td>
+                      <td style={{ padding: '10px' }}>Cada {m.intervaloService} hs/km</td>
+                      <td style={{ padding: '10px', fontWeight: 'bold', color: m.colorEstado }}>{m.estado}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pestana === 'excel' && (
+        <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>Importar Planilla CSV</h2>
+          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Subí tu archivo CSV exportado de Excel (delimitado por punto y coma):</p>
+          
+          <input type="file" accept=".csv" onChange={handleCargarArchivo} style={{ color: '#f8fafc', marginBottom: '15px', width: '100%' }} />
+          
+          {excelName && (
+            <div style={{ background: '#0f172a', padding: '15px', borderRadius: '8px', marginTop: '10px' }}>
+              <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>Archivo: {excelName} ({excelRows.length} filas detectadas)</p>
+              <button onClick={procesarYSubirLote} disabled={subiendoExcel} style={{ background: '#38bdf8', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>
+                {subiendoExcel ? 'Sincronizando con Supabase...' : 'Sincronizar Lote con Supabase'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
