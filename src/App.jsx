@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
-// Configuración completa con tus credenciales reales de Supabase
 const supabaseUrl = 'https://vlllvmklgokwwuvnasuo.supabase.co';
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsbGx2bWtsZ29rd3d1dm5hc3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1NTgxMzgsImV4cCI6MjEwNzEzNDEzOH0.Q5rP9pu0bW-1F16mBsbn69t95TzeB437PmWHPEp_Mzc';
 
@@ -313,4 +312,52 @@ export default function App() {
       )}
 
       {pestana === 'mantenimiento' && (
-        <div style={{ maxWidth: '800px', margin: '0 auto', backgroundColor: '#1e293
+        <div style={{ maxWidth: '800px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+          <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '10px' }}>Control de Mantenimiento</h2>
+          {mantenimientos.length > 0 ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8' }}>
+                  <th style={{ padding: '10px' }}>Equipo</th>
+                  <th style={{ padding: '10px' }}>Último HM/KM</th>
+                  <th style={{ padding: '10px' }}>Próximo Service</th>
+                  <th style={{ padding: '10px' }}>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mantenimientos.map((m, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                    <td style={{ padding: '10px', fontWeight: 'bold' }}>{m.codigo_equipo || '-'}</td>
+                    <td style={{ padding: '10px' }}>{m.ultimo_hm_km || '-'}</td>
+                    <td style={{ padding: '10px' }}>{m.proximo_service || '-'}</td>
+                    <td style={{ padding: '10px', color: '#38bdf8' }}>{m.estado || 'OK'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '30px', color: '#94a3b8' }}>No hay registros de mantenimiento.</div>
+          )}
+        </div>
+      )}
+
+      {pestana === 'excel' && (
+        <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>Importar Planilla CSV</h2>
+          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Subí tu archivo CSV exportado de Excel (delimitado por punto y coma):</p>
+          
+          <input type="file" accept=".csv" onChange={handleCargarArchivo} style={{ color: '#f8fafc', marginBottom: '15px', width: '100%' }} />
+          
+          {excelName && (
+            <div style={{ background: '#0f172a', padding: '15px', borderRadius: '8px', marginTop: '10px' }}>
+              <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>Archivo: {excelName} ({excelRows.length} filas detectadas)</p>
+              <button onClick={procesarYSubirLote} disabled={subiendoExcel} style={{ background: '#38bdf8', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>
+                {subiendoExcel ? 'Sincronizando con Supabase...' : 'Sincronizar Lote con Supabase'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
