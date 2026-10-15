@@ -8,7 +8,6 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function App() {
   const [tanques, setTanques] = useState([]);
-  const [cargas, setCargas] = useState([]);
   const [todasLasCargas, setTodasLasCargas] = useState([]);
   const [equipos, setEquipos] = useState([]);
   const [choferes, setChoferes] = useState([
@@ -23,9 +22,17 @@ export default function App() {
   const [pestana, setPestana] = useState('dashboard');
   const [loading, setLoading] = useState(false);
 
+  // Filtros generales de historial
   const [filtroAnio, setFiltroAnio] = useState('');
   const [filtroMes, setFiltroMes] = useState('');
   const [filtroDia, setFiltroDia] = useState('');
+
+  // Filtros interactivos para el Dashboard (Gráfico de barras y stock)
+  const [dashAnio, setDashAnio] = useState('');
+  const [dashMes, setDashMes] = useState('');
+  const [dashObra, setDashObra] = useState('');
+  const [dashDesde, setDashDesde] = useState('');
+  const [dashHasta, setDashHasta] = useState('');
 
   const [formCarga, setFormCarga] = useState({
     Fecha: new Date().toISOString().split('T')[0],
@@ -51,61 +58,64 @@ export default function App() {
 
   useEffect(() => {
     if (supabase) {
-      fetchTanques();
-      fetchCargas();
-      fetchEquipos();
-      fetchMantenimientos();
+      fetchDatos();
     }
   }, []);
 
-  async function fetchTanques() {
-    try {
-      const { data: tanquesData } = await supabase.from('tanques').select('*');
-      const { data: cargasData } = await supabase.from('cargas_diarias').select('*');
-      
-      if (tanquesData) {
-        const tanquesCalculados = tanquesData.map(t => {
-          const capacidad = parseFloat(t.capacidad_l || t.stock_actual_l || 0);
-          let totalSalidas = 0;
-          let totalEntradas = 0;
-
-          if (cargasData) {
-            cargasData.forEach(c => {
-              const litros = parseFloat(c['Litros Indicados'] || 0);
-              if (c.Origen && c.Origen.toLowerCase().includes(t.nombre.toLowerCase())) {
-                if (c['Tipo Movimiento'] === 'Consumo' || c['Tipo Movimiento'] === 'Transferencia') {
-                  totalSalidas += litros;
-                }
-              }
-              if (c['Tipo Movimiento'] === 'Compra' && c.Origen && c.Origen.toLowerCase().includes(t.nombre.toLowerCase())) {
-                totalEntradas += litros;
-              }
-            });
-          }
-          const stockReal = Math.max(0, capacidad - totalSalidas + totalEntradas);
-          return { ...t, stock_real: stockReal, capacidad: capacidad };
-        });
-        setTanques(tanquesCalculados);
-      }
-    } catch (e) { console.error(e); }
-  }
-
-  async function fetchCargas() {
+  async function fetchDatos() {
     setLoading(true);
     try {
-      const { data } = await supabase.from('cargas_diarias').select('*').order('id', { ascending: false }).limit(10);
-      if (data) setCargas(data);
+      const { data: tanquesData } = await supabase.from('tanques').select('*');
+      const { data: cargasData } = await supabase.from('cargas_diarias').select('*').order('id', { ascending: false });
+      const { data: equiposData } = await supabase.from('equipos').select('*');
+      const { data: mantData } = await supabase.from('mantenimiento').select('*');
 
-      const { data: dataTodas } = await supabase.from('cargas_diarias').select('*').order('id', { ascending: false });
-      if (dataTodas) {
-        setTodasLasCargas(dataTodas);
-        extraerEquiposYCuentas(dataTodas);
+      if (cargasData) {
+        setTodasLasCargas(cargasData);
+        extraerEquipos(cargasData);
+      }
+      if (equiposData && equiposData.length > 0) {
+        setEquipos(equiposData);
+      }
+      if (mantData) {
+        setMantenimientos(mantData);
+      }
+      if (tanquesData) {
+        calcularStockTanques(tanquesData, cargasData || []);
       }
     } catch (e) { console.error(e); }
     setLoading(false);
   }
 
-  function extraerEquiposYCuentas(cargasArray) {
+  function calcularStockTanques(tanquesData, cargasData) {
+    const tanquesCalculados = tanquesData.map(t => {
+      const capacidad = parseFloat(t.capacidad_l || t.stock_actual_l || 8500);
+      let totalSalidas = 0;
+      let totalEntradas = 0;
+      const nombreTanque = t.nombre.toLowerCase();
+
+      cargasData.forEach(c => {
+        const litros = parseFloat(c['Litros Indicados'] || 0);
+        const origenCarga = (c.Origen || '').toLowerCase();
+        
+        // Coincidencia flexible de origen
+        if (origenCarga.includes(nombreTanque) || (nombreTanque.includes('principal') && origenCarga.includes('ppl'))) {
+          if (c['Tipo Movimiento'] === 'Consumo' || c['Tipo Movimiento'] === 'Transferencia') {
+            totalSalidas += litros;
+          }
+        }
+        if (c['Tipo Movimiento'] === 'Compra' && (origenCarga.includes(nombreTanque) || (nombreTanque.includes('principal') && origenCarga.includes('ppl')))) {
+          totalEntradas += litros;
+        }
+      });
+
+      const stockReal = Math.max(0, capacidad - totalSalidas + totalEntradas);
+      return { ...t, stock_real: stockReal, capacidad: capacidad };
+    });
+    setTanques(tanquesCalculados);
+  }
+
+  function extraerEquipos(cargasArray) {
     const equiposMap = {};
     cargasArray.forEach(c => {
       const eqCode = c.Equipo || c['Destino / Equipo'];
@@ -126,26 +136,6 @@ export default function App() {
       const nuevos = Object.values(equiposMap).filter(e => !codigosExistentes.has(e.codigo));
       return [...prev, ...nuevos];
     });
-  }
-
-  async function fetchEquipos() {
-    try {
-      const { data } = await supabase.from('equipos').select('*');
-      if (data && data.length > 0) {
-        setEquipos(prev => {
-          const codigos = new Set(prev.map(p => p.codigo));
-          const unicosBD = data.filter(d => !codigos.has(d.codigo));
-          return [...prev, ...unicosBD];
-        });
-      }
-    } catch (e) { console.error(e); }
-  }
-
-  async function fetchMantenimientos() {
-    try {
-      const { data } = await supabase.from('mantenimiento').select('*');
-      if (data && data.length > 0) setMantenimientos(data);
-    } catch (e) { console.error(e); }
   }
 
   const handleSeleccionEquipoForm = (codigoEq) => {
@@ -182,8 +172,7 @@ export default function App() {
         Observaciones: ''
       });
       setPestana('dashboard');
-      fetchCargas();
-      fetchTanques();
+      fetchDatos();
     } catch (err) {
       alert('Error al guardar: ' + err.message);
     }
@@ -273,19 +262,19 @@ export default function App() {
       const { error } = await supabase.from('cargas_diarias').insert(filasAInsertar);
       if (error) throw error;
 
-      alert(`¡Lote de ${filasAInsertar.length} registros sincronizado correctamente a Supabase!`);
+      alert(`¡Lote de ${filasAInsertar.length} registros sincronizado correctamente!`);
       setExcelRows([]);
       setExcelName('');
       setPestana('dashboard');
-      fetchCargas();
-      fetchTanques();
+      fetchDatos();
     } catch (err) {
-      console.error("Error al sincronizar:", err);
+      console.error(err);
       alert('Error al sincronizar: ' + err.message);
     }
     setSubiendoExcel(false);
   };
 
+  // Filtrado para Historial
   const cargasFiltradas = todasLasCargas.filter(c => {
     if (!c.Fecha) return true;
     const matchAnio = filtroAnio ? c.Fecha.includes(filtroAnio) : true;
@@ -294,13 +283,35 @@ export default function App() {
     return matchAnio && matchMes && matchDia;
   });
 
-  const consumoPorVehiculo = {};
-  todasLasCargas.forEach(c => {
-    const eq = c.Equipo || c['Destino / Equipo'] || 'Sin Asignar';
-    const litros = parseFloat(c['Litros Indicados'] || 0);
-    consumoPorVehiculo[eq] = (consumoPorVehiculo[eq] || 0) + litros;
+  // Filtrado interactivo para el Dashboard (Gráfico de barras)
+  const cargasDashboardFiltradas = todasLasCargas.filter(c => {
+    if (!c.Fecha) return true;
+    const anioCarga = c.Fecha.split('-')[0] || '';
+    const mesCarga = c.Fecha.split('-')[1] || '';
+    
+    const matchAnio = dashAnio ? anioCarga === dashAnio : true;
+    const matchMes = dashMes ? mesCarga === dashMes : true;
+    const matchObra = dashObra ? (c.Obra || '').toLowerCase().includes(dashObra.toLowerCase()) : true;
+    
+    let matchRango = true;
+    if (dashDesde && c.Fecha < dashDesde) matchRango = false;
+    if (dashHasta && c.Fecha > dashHasta) matchRango = false;
+
+    return matchAnio && matchMes && matchObra && matchRango;
   });
 
+  // Consumo por máquina ordenado de mayor a menor para barras horizontales
+  const consumoPorVehiculoDash = {};
+  cargasDashboardFiltradas.forEach(c => {
+    const eq = c.Equipo || c['Destino / Equipo'] || 'Sin Asignar';
+    const litros = parseFloat(c['Litros Indicados'] || 0);
+    consumoPorVehiculoDash[eq] = (consumoPorVehiculoDash[eq] || 0) + litros;
+  });
+
+  const consumoOrdenado = Object.entries(consumoPorVehiculoDash).sort((a, b) => b[1] - a[1]);
+  const maxLitrosConsumo = consumoOrdenado.length > 0 ? consumoOrdenado[0][1] : 1;
+
+  // Estado de Mantenimiento
   const estadoMantenimientoEquipos = equipos.map(eq => {
     const cargasEq = todasLasCargas.filter(c => (c.Equipo === eq.codigo || c['Destino / Equipo'] === eq.codigo));
     let ultimoLectura = 0;
@@ -329,15 +340,7 @@ export default function App() {
       colorEstado = '#f59e0b';
     }
 
-    return {
-      ...eq,
-      ultimoLectura,
-      intervaloService,
-      ultimoServiceLectura,
-      horasRestantes: Math.max(0, horasRestantes),
-      estado,
-      colorEstado
-    };
+    return { ...eq, ultimoLectura, intervaloService, ultimoServiceLectura, horasRestantes: Math.max(0, horasRestantes), estado, colorEstado };
   });
 
   return (
@@ -358,6 +361,7 @@ export default function App() {
         </div>
       </header>
 
+      {/* DASHBOARD */}
       {pestana === 'dashboard' && (
         <div>
           <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Stock Actual en Cisternas (Litros Reales)</h2>
@@ -366,71 +370,71 @@ export default function App() {
               tanques.map(t => (
                 <div key={t.id} style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
                   <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', color: '#38bdf8' }}>{t.nombre}</h3>
-                  <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#4ade80' }}>{t.stock_real} Lts</div>
+                  <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#4ade80' }}>{t.stock_real.toFixed(0)} Lts</div>
                   <p style={{ fontSize: '12px', color: '#94a3b8', margin: '6px 0 0 0' }}>Capacidad: {t.capacidad} Lts</p>
                 </div>
               ))
             ) : (
               <div style={{ gridColumn: '1 / -1', padding: '20px', textAlign: 'center', backgroundColor: '#1e293b', borderRadius: '8px', color: '#94a3b8' }}>
-                Calculando stock de cisternas...
+                Calculando stock...
               </div>
             )}
           </div>
 
-          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Consumo Acumulado por Vehículo / Equipo (Litros)</h2>
-          <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '30px' }}>
-            {Object.keys(consumoPorVehiculo).length > 0 ? (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
-                {Object.entries(consumoPorVehiculo).map(([vehiculo, litros], idx) => (
-                  <div key={idx} style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #334155' }}>
-                    <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#38bdf8' }}>{vehiculo}</div>
-                    <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#f59e0b', marginTop: '5px' }}>{litros.toFixed(1)} Lts</div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos registrados aún.</p>
-            )}
+          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Consumo por Vehículo / Máquina (Gráfico de Barras)</h2>
+          
+          {/* Panel de Filtros para el Gráfico */}
+          <div style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div>
+              <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Año</label>
+              <input type="text" placeholder="Ej: 2026" value={dashAnio} onChange={e => setDashAnio(e.target.value)} style={{ padding: '6px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', width: '90px' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Mes (01-12)</label>
+              <input type="text" placeholder="Ej: 10" value={dashMes} onChange={e => setDashMes(e.target.value)} style={{ padding: '6px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', width: '80px' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Obra</label>
+              <input type="text" placeholder="Ej: RN40" value={dashObra} onChange={e => setDashObra(e.target.value)} style={{ padding: '6px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', width: '110px' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Desde</label>
+              <input type="date" value={dashDesde} onChange={e => setDashDesde(e.target.value)} style={{ padding: '6px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Hasta</label>
+              <input type="date" value={dashHasta} onChange={e => setDashHasta(e.target.value)} style={{ padding: '6px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', marginTop: '16px' }}>
+              <button onClick={() => { setDashAnio(''); setDashMes(''); setDashObra(''); setDashDesde(''); setDashHasta(''); }} style={{ background: '#334155', color: '#fff', border: 'none', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>Limpiar Filtros</button>
+            </div>
           </div>
 
-          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Últimas Cargas Registradas</h2>
-          <div style={{ backgroundColor: '#1e293b', borderRadius: '12px', border: '1px solid #334155', overflow: 'hidden' }}>
-            {cargas.length > 0 ? (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8', backgroundColor: '#0f172a' }}>
-                      <th style={{ padding: '12px' }}>Fecha</th>
-                      <th style={{ padding: '12px' }}>Movimiento</th>
-                      <th style={{ padding: '12px' }}>Origen</th>
-                      <th style={{ padding: '12px' }}>Equipo</th>
-                      <th style={{ padding: '12px' }}>Chofer</th>
-                      <th style={{ padding: '12px' }}>Litros</th>
-                      <th style={{ padding: '12px' }}>Obra</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cargas.map((c, i) => (
-                      <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
-                        <td style={{ padding: '12px' }}>{c.Fecha || '-'}</td>
-                        <td style={{ padding: '12px', color: c['Tipo Movimiento'] === 'Compra' ? '#4ade80' : '#38bdf8' }}>{c['Tipo Movimiento'] || '-'}</td>
-                        <td style={{ padding: '12px' }}>{c.Origen || '-'}</td>
-                        <td style={{ padding: '12px', fontWeight: 'bold' }}>{c.Equipo || '-'}</td>
-                        <td style={{ padding: '12px' }}>{c.Chofer || '-'}</td>
-                        <td style={{ padding: '12px', fontWeight: 'bold', color: '#f59e0b' }}>{c['Litros Indicados'] || 0} L</td>
-                        <td style={{ padding: '12px' }}>{c.Obra || '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          {/* Gráfico de Barras Horizontales */}
+          <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+            {consumoOrdenado.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {consumoOrdenado.map(([vehiculo, litros], idx) => {
+                  const porcentaje = Math.max(4, (litros / maxLitrosConsumo) * 100);
+                  return (
+                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                      <div style={{ width: '90px', fontSize: '13px', fontWeight: 'bold', color: '#38bdf8', textAlign: 'right' }}>{vehiculo}</div>
+                      <div style={{ flex: 1, backgroundColor: '#0f172a', borderRadius: '6px', height: '24px', position: 'relative', overflow: 'hidden', border: '1px solid #334155' }}>
+                        <div style={{ width: `${porcentaje}%`, backgroundColor: '#f59e0b', height: '100%', borderRadius: '4px', transition: 'width 0.4s ease' }}></div>
+                        <span style={{ position: 'absolute', right: '10px', top: '2px', fontSize: '12px', fontWeight: 'bold', color: '#fff' }}>{litros.toFixed(1)} Lts</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
-              <div style={{ padding: '30px', textAlign: 'center', color: '#94a3b8' }}>Cargando registros...</div>
+              <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos registrados para los filtros seleccionados.</p>
             )}
           </div>
         </div>
       )}
 
+      {/* HISTORIAL Y FILTROS */}
       {pestana === 'historial' && (
         <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>Historial Completo y Filtros por Fecha</h2>
@@ -490,6 +494,7 @@ export default function App() {
         </div>
       )}
 
+      {/* NUEVA CARGA */}
       {pestana === 'nueva_carga' && (
         <div style={{ maxWidth: '650px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h2 style={{ fontSize: '18px', marginBottom: '20px', color: '#f59e0b' }}>+ Registrar Nueva Carga Manual</h2>
@@ -562,6 +567,7 @@ export default function App() {
         </div>
       )}
 
+      {/* EQUIPOS */}
       {pestana === 'equipos' && (
         <div style={{ maxWidth: '900px', margin: '0 auto' }}>
           <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '25px' }}>
@@ -603,6 +609,7 @@ export default function App() {
         </div>
       )}
 
+      {/* CHOFERES */}
       {pestana === 'choferes' && (
         <div style={{ maxWidth: '800px', margin: '0 auto' }}>
           <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '25px' }}>
@@ -636,6 +643,7 @@ export default function App() {
         </div>
       )}
 
+      {/* MANTENIMIENTO */}
       {pestana === 'mantenimiento' && (
         <div style={{ maxWidth: '950px', margin: '0 auto' }}>
           <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '25px' }}>
@@ -683,6 +691,7 @@ export default function App() {
         </div>
       )}
 
+      {/* EXCEL / CSV */}
       {pestana === 'excel' && (
         <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
           <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>Importar Planilla CSV</h2>
@@ -694,7 +703,7 @@ export default function App() {
             <div style={{ background: '#0f172a', padding: '15px', borderRadius: '8px', marginTop: '10px' }}>
               <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>Archivo: {excelName} ({excelRows.length} filas detectadas)</p>
               <button onClick={procesarYSubirLote} disabled={subiendoExcel} style={{ background: '#38bdf8', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>
-                {subiendoExcel ? 'Sincronizando con Supabase...' : 'Sincronizar Lote con Supabase'}
+                {subiendoExcel ? 'Sincronizando...' : 'Sincronizar Lote con Supabase'}
               </button>
             </div>
           )}
