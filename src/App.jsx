@@ -102,7 +102,6 @@ export default function App() {
       cargasData.forEach(c => {
         const litros = parseFloat(c['Litros Indicados'] || c['Litros Reales'] || 0);
         const origenCarga = (c.Origen || '').toLowerCase();
-        const destinoCarga = (c['Destino / Equipo'] || '').toLowerCase();
         const tipoMov = (c['Tipo Movimiento'] || '').toLowerCase();
 
         // 1. COMPRAS E INGRESOS (Dafre -> Camión, YPF -> PPL)
@@ -118,14 +117,14 @@ export default function App() {
         // 2. TRANSFERENCIAS (PPL -> Cisterna Camión)
         if (tipoMov.includes('transferencia')) {
           if (nombreTanque.includes('principal') || nombreTanque.includes('ppl')) {
-            totalSalidas += litros; // Sale de la principal
+            totalSalidas += litros;
           }
           if (nombreTanque.includes('camión') || nombreTanque.includes('camion')) {
-            totalEntradas += litros; // Entra a la cisterna del camión
+            totalEntradas += litros;
           }
         }
 
-        // 3. CONSUMOS A VEHÍCULOS (Desde Cisterna Camión o PPL)
+        // 3. CONSUMOS A VEHÍCULOS
         if (tipoMov.includes('consumo')) {
           if (nombreTanque.includes('camión') && (origenCarga.includes('camión') || origenCarga.includes('camion'))) {
             totalSalidas += litros;
@@ -136,10 +135,8 @@ export default function App() {
         }
       });
 
-      // Cálculo de stock real respetando el límite físico máximo de la cisterna
-      let stockReal = capacidad - totalSalidas + totalEntradas;
-      if (stockReal > capacidad) stockReal = capacidad;
-      if (stockReal < 0) stockReal = 0;
+      // Cálculo de stock real permitiendo negativos para identificar errores de carga
+      const stockReal = capacidad - totalSalidas + totalEntradas;
 
       return { 
         ...t, 
@@ -312,6 +309,16 @@ export default function App() {
     setSubiendoExcel(false);
   };
 
+  // Extraer listas dinámicas para desplegables de filtros
+  const aniosDisponibles = [...new Set(todasLasCargas.map(c => c.Fecha ? c.Fecha.split('-')[0] : '').filter(Boolean))].sort().reverse();
+  const mesesDisponibles = [
+    { num: '01', nombre: 'Enero' }, { num: '02', nombre: 'Febrero' }, { num: '03', nombre: 'Marzo' },
+    { num: '04', nombre: 'Abril' }, { num: '05', nombre: 'Mayo' }, { num: '06', nombre: 'Junio' },
+    { num: '07', nombre: 'Julio' }, { num: '08', nombre: 'Agosto' }, { num: '09', nombre: 'Septiembre' },
+    { num: '10', nombre: 'Octubre' }, { num: '11', nombre: 'Noviembre' }, { num: '12', nombre: 'Diciembre' }
+  ];
+  const obrasDisponibles = [...new Set(todasLasCargas.map(c => c.Obra).filter(Boolean))].sort();
+
   // Filtrado para Historial
   const cargasFiltradas = todasLasCargas.filter(c => {
     if (!c.Fecha) return true;
@@ -321,7 +328,7 @@ export default function App() {
     return matchAnio && matchMes && matchDia;
   });
 
-  // Filtrado interactivo para el Dashboard
+  // Filtrado interactivo para el Dashboard (Corregido campo Hasta)
   const cargasDashboardFiltradas = todasLasCargas.filter(c => {
     if (!c.Fecha) return true;
     const fechaCarga = c.Fecha.split('T')[0];
@@ -330,7 +337,7 @@ export default function App() {
     
     const matchAnio = dashAnio ? anioCarga === dashAnio : true;
     const matchMes = dashMes ? mesCarga === dashMes || mesCarga === `0${dashMes}`.slice(-2) : true;
-    const matchObra = dashObra ? (c.Obra || '').toLowerCase().includes(dashObra.toLowerCase()) : true;
+    const matchObra = dashObra ? (c.Obra || '').toLowerCase().trim() === dashObra.toLowerCase().trim() : true;
     
     let matchRango = true;
     if (dashDesde && fechaCarga < dashDesde) matchRango = false;
@@ -419,20 +426,25 @@ export default function App() {
       {/* DASHBOARD */}
       {pestana === 'dashboard' && (
         <div>
-          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Stock Actual en Cisternas (Litros Reales - Límite Físico)</h2>
+          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Stock Actual en Cisternas (Litros Reales - Permite Negativos por Errores)</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '15px', marginBottom: '30px' }}>
             {tanques.length > 0 ? (
-              tanques.map(t => (
-                <div key={t.id} style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
-                  <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', color: '#38bdf8' }}>{t.nombre}</h3>
-                  <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#4ade80' }}>{t.stock_real.toFixed(0)} Lts</div>
-                  <p style={{ fontSize: '12px', color: '#94a3b8', margin: '6px 0 0 0' }}>Capacidad Máxima: {t.capacidad} Lts</p>
-                  <div style={{ fontSize: '11px', color: '#f59e0b', marginTop: '6px', borderTop: '1px solid #334155', paddingTop: '6px' }}>
-                    Entradas (Compras/Transf): +{t.totalEntradas.toFixed(0)} L<br/>
-                    Salidas (Consumos/Transf): -{t.totalSalidas.toFixed(0)} L
+              tanques.map(t => {
+                const esNegativo = t.stock_real < 0;
+                return (
+                  <div key={t.id} style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', border: `1px solid ${esNegativo ? '#ef4444' : '#334155'}` }}>
+                    <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', color: '#38bdf8' }}>{t.nombre}</h3>
+                    <div style={{ fontSize: '24px', fontWeight: 'bold', color: esNegativo ? '#ef4444' : '#4ade80' }}>
+                      {t.stock_real.toFixed(0)} Lts {esNegativo && '⚠️ (Déficit)'}
+                    </div>
+                    <p style={{ fontSize: '12px', color: '#94a3b8', margin: '6px 0 0 0' }}>Capacidad Máxima: {t.capacidad} Lts</p>
+                    <div style={{ fontSize: '11px', color: '#f59e0b', marginTop: '6px', borderTop: '1px solid #334155', paddingTop: '6px' }}>
+                      Entradas (Compras/Transf): +{t.totalEntradas.toFixed(0)} L<br/>
+                      Salidas (Consumos/Transf): -{t.totalSalidas.toFixed(0)} L
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             ) : (
               <div style={{ gridColumn: '1 / -1', padding: '20px', textAlign: 'center', backgroundColor: '#1e293b', borderRadius: '8px', color: '#94a3b8' }}>
                 Calculando stock de cisternas...
@@ -440,19 +452,28 @@ export default function App() {
             )}
           </div>
 
-          {/* Panel de Filtros para los Gráficos */}
+          {/* Panel de Filtros Desplegables para los Gráficos */}
           <div style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Año</label>
-              <input type="text" placeholder="Ej: 2026" value={dashAnio} onChange={e => setDashAnio(e.target.value)} style={{ padding: '6px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', width: '90px' }} />
+              <select value={dashAnio} onChange={e => setDashAnio(e.target.value)} style={{ padding: '7px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }}>
+                <option value="">Todos</option>
+                {aniosDisponibles.map((a, i) => <option key={i} value={a}>{a}</option>)}
+              </select>
             </div>
             <div>
-              <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Mes (01-12)</label>
-              <input type="text" placeholder="Ej: 10" value={dashMes} onChange={e => setDashMes(e.target.value)} style={{ padding: '6px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', width: '80px' }} />
+              <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Mes</label>
+              <select value={dashMes} onChange={e => setDashMes(e.target.value)} style={{ padding: '7px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }}>
+                <option value="">Todos</option>
+                {mesesDisponibles.map((m, i) => <option key={i} value={m.num}>{m.nombre}</option>)}
+              </select>
             </div>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Obra</label>
-              <input type="text" placeholder="Ej: RN40" value={dashObra} onChange={e => setDashObra(e.target.value)} style={{ padding: '6px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', width: '110px' }} />
+              <select value={dashObra} onChange={e => setDashObra(e.target.value)} style={{ padding: '7px 10px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }}>
+                <option value="">Todas</option>
+                {obrasDisponibles.map((ob, i) => <option key={i} value={ob}>{ob}</option>)}
+              </select>
             </div>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Desde</label>
@@ -489,7 +510,7 @@ export default function App() {
                   })}
                 </div>
               ) : (
-                <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos registrados.</p>
+                <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos registrados para los filtros seleccionados.</p>
               )}
             </div>
 
@@ -512,7 +533,7 @@ export default function App() {
                   })}
                 </div>
               ) : (
-                <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay suficientes datos de rendimiento en el lote.</p>
+                <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay suficientes datos de rendimiento para los filtros seleccionados.</p>
               )}
             </div>
 
@@ -527,16 +548,22 @@ export default function App() {
           
           <div style={{ display: 'flex', gap: '15px', marginBottom: '20px', flexWrap: 'wrap' }}>
             <div>
-              <label style={{ fontSize: '12px', color: '#cbd5e1', display: 'block', marginBottom: '5px' }}>Año (Ej: 2026)</label>
-              <input type="text" placeholder="Todos" value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={{ padding: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+              <label style={{ fontSize: '12px', color: '#cbd5e1', display: 'block', marginBottom: '5px' }}>Año</label>
+              <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={{ padding: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }}>
+                <option value="">Todos</option>
+                {aniosDisponibles.map((a, i) => <option key={i} value={a}>{a}</option>)}
+              </select>
             </div>
             <div>
-              <label style={{ fontSize: '12px', color: '#cbd5e1', display: 'block', marginBottom: '5px' }}>Mes (Ej: 10)</label>
-              <input type="text" placeholder="Todos" value={filtroMes} onChange={e => setFiltroMes(e.target.value)} style={{ padding: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+              <label style={{ fontSize: '12px', color: '#cbd5e1', display: 'block', marginBottom: '5px' }}>Mes</label>
+              <select value={filtroMes} onChange={e => setFiltroMes(e.target.value)} style={{ padding: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }}>
+                <option value="">Todos</option>
+                {mesesDisponibles.map((m, i) => <option key={i} value={m.num}>{m.nombre}</option>)}
+              </select>
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1', display: 'block', marginBottom: '5px' }}>Día (Ej: 07)</label>
-              <input type="text" placeholder="Todos" value={filtroDia} onChange={e => setFiltroDia(e.target.value)} style={{ padding: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px' }} />
+              <input type="text" placeholder="Todos" value={filtroDia} onChange={e => setFiltroDia(e.target.value)} style={{ padding: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', borderRadius: '6px', width: '80px' }} />
             </div>
             <div style={{ display: 'flex', alignItems: 'flex-end' }}>
               <button onClick={() => { setFiltroAnio(''); setFiltroMes(''); setFiltroDia(''); }} style={{ background: '#334155', color: '#fff', border: 'none', padding: '9px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Limpiar Filtros</button>
