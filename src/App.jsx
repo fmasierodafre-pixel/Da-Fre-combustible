@@ -81,7 +81,6 @@ export default function App() {
         setMantenimientos(mantData);
       }
 
-      // Procesar stock de cisternas
       const listaTanquesBase = (tanquesData && tanquesData.length > 0) ? tanquesData : [
         { id: 1, nombre: 'Cisterna Principal (PPL)', capacidad_l: 8500 },
         { id: 2, nombre: 'Cisterna Camión', capacidad_l: 4000 },
@@ -95,7 +94,7 @@ export default function App() {
 
   function calcularStockTanques(tanquesBase, cargasData) {
     const tanquesCalculados = tanquesBase.map(t => {
-      const capacidad = parseFloat(t.capacidad_l || t.stock_actual_l || 0);
+      const capacidad = parseFloat(t.capacidad_l || t.stock_actual_l || 8500);
       let totalSalidas = 0;
       let totalEntradas = 0;
       const nombreTanque = (t.nombre || '').toLowerCase();
@@ -105,24 +104,24 @@ export default function App() {
         const origenCarga = (c.Origen || '').toLowerCase();
         const tipoMov = (c['Tipo Movimiento'] || '').toLowerCase();
 
-        // 1. COMPRAS E INGRESOS DIRECTOS (IPF)
+        // Compras e Ingresos
         if (tipoMov.includes('compra') || tipoMov.includes('ingreso')) {
           if (origenCarga.includes(nombreTanque) || (nombreTanque.includes('principal') && (origenCarga.includes('ppl') || origenCarga.includes('ipf')))) {
             totalEntradas += litros;
           }
         }
 
-        // 2. TRANSFERENCIAS
+        // Transferencias
         if (tipoMov.includes('transferencia')) {
           if (nombreTanque.includes('principal') || nombreTanque.includes('ppl')) {
-            totalSalidas += litros; // Sale de la principal
+            totalSalidas += litros;
           }
           if (nombreTanque.includes('camión') || nombreTanque.includes('camion')) {
-            totalEntradas += litros; // Ingresa al camión de reparto
+            totalEntradas += litros;
           }
         }
 
-        // 3. CONSUMOS
+        // Consumos
         if (tipoMov.includes('consumo')) {
           if (origenCarga.includes(nombreTanque) || 
              (nombreTanque.includes('principal') && origenCarga.includes('ppl')) ||
@@ -132,10 +131,10 @@ export default function App() {
         }
       });
 
-      // Cálculo de stock actual: Compras/Ingresos - Salidas
-      // Si aún no se registraron las compras iniciales en la base de datos, mostramos el saldo balanceado
-      const saldoCalculado = totalEntradas - totalSalidas;
-      const stockReal = totalEntradas > 0 ? Math.max(0, saldoCalculado) : Math.max(0, capacidad - totalSalidas);
+      // Cálculo estricto respetando la capacidad física máxima de la cisterna
+      let stockReal = capacidad - totalSalidas + totalEntradas;
+      if (stockReal > capacidad) stockReal = capacidad; // No puede superar la capacidad física
+      if (stockReal < 0) stockReal = 0;
 
       return { 
         ...t, 
@@ -153,7 +152,7 @@ export default function App() {
     const equiposMap = {};
     cargasArray.forEach(c => {
       const eqCode = c.Equipo || c['Destino / Equipo'];
-      if (eqCode && !eqCode.toLowerCase().includes('cisterna') && !eqCode.toLowerCase().includes('plaasf') && !eqCode.toLowerCase().includes('ppl') && !equiposMap[eqCode]) {
+      if (eqCode && eqCode.trim() !== '' && !eqCode.toLowerCase().includes('cisterna') && !eqCode.toLowerCase().includes('plaasf') && !eqCode.toLowerCase().includes('ppl') && !equiposMap[eqCode]) {
         const esMaquina = eqCode.startsWith('M') || eqCode.startsWith('CAT') || eqCode.startsWith('P');
         equiposMap[eqCode] = {
           codigo: eqCode,
@@ -291,7 +290,7 @@ export default function App() {
         "Rendimiento (L/h o L/km)": row[16] || '',
         "Observaciones": row[17] || '',
         "Descripción Equipo": row[18] || ''
-      })).filter(item => item["Litros Indicados"] > 0);
+      })).filter(item => item["Litros Indicados"] > 0 && item.Equipo && item.Equipo.trim() !== '');
 
       const { error } = await supabase.from('cargas_diarias').insert(filasAInsertar);
       if (error) throw error;
@@ -317,7 +316,7 @@ export default function App() {
     return matchAnio && matchMes && matchDia;
   });
 
-  // Filtrado interactivo para el Dashboard (Gráfico de barras)
+  // Filtrado interactivo para el Dashboard
   const cargasDashboardFiltradas = todasLasCargas.filter(c => {
     if (!c.Fecha) return true;
     const fechaCarga = c.Fecha.split('T')[0];
@@ -335,19 +334,33 @@ export default function App() {
     return matchAnio && matchMes && matchObra && matchRango;
   });
 
-  // Consumo por máquina ordenado de mayor a menor (Excluyendo cisternas y tanques)
+  // Consumo por máquina (excluyendo vacíos y tanques)
   const consumoPorVehiculoDash = {};
+  const rendimientoPorVehiculoDash = {};
+
   cargasDashboardFiltradas.forEach(c => {
-    const eq = c.Equipo || c['Destino / Equipo'] || 'Sin Asignar';
-    const eqUpper = eq.toUpperCase();
-    if (!eqUpper.includes('CISTERNA') && !eqUpper.includes('PLAASF') && !eqUpper.includes('PPL')) {
-      const litros = parseFloat(c['Litros Indicados'] || c['Litros Reales'] || 0);
-      consumoPorVehiculoDash[eq] = (consumoPorVehiculoDash[eq] || 0) + litros;
+    const eq = c.Equipo || c['Destino / Equipo'];
+    if (eq && eq.trim() !== '') {
+      const eqUpper = eq.toUpperCase();
+      if (!eqUpper.includes('CISTERNA') && !eqUpper.includes('PLAASF') && !eqUpper.includes('PPL')) {
+        const litros = parseFloat(c['Litros Indicados'] || c['Litros Reales'] || 0);
+        consumoPorVehiculoDash[eq] = (consumoPorVehiculoDash[eq] || 0) + litros;
+
+        // Cálculo de rendimiento (L/h o L/km) si existe en la carga
+        const rendStr = c['Rendimiento (L/h o L/km)'] || '0';
+        const rendVal = parseFloat(rendStr.toString().replace(',', '.')) || 0;
+        if (rendVal > 0) {
+          rendimientoPorVehiculoDash[eq] = rendimientoPorVehiculoDash[eq] ? (rendimientoPorVehiculoDash[eq] + rendVal) / 2 : rendVal;
+        }
+      }
     }
   });
 
   const consumoOrdenado = Object.entries(consumoPorVehiculoDash).sort((a, b) => b[1] - a[1]);
   const maxLitrosConsumo = consumoOrdenado.length > 0 ? consumoOrdenado[0][1] : 1;
+
+  const rendimientoOrdenado = Object.entries(rendimientoPorVehiculoDash).sort((a, b) => b[1] - a[1]);
+  const maxRendimiento = rendimientoOrdenado.length > 0 ? rendimientoOrdenado[0][1] : 1;
 
   // Estado de Mantenimiento
   const estadoMantenimientoEquipos = equipos.map(eq => {
@@ -402,17 +415,17 @@ export default function App() {
       {/* DASHBOARD */}
       {pestana === 'dashboard' && (
         <div>
-          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Stock Actual en Cisternas (Litros Reales)</h2>
+          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Stock Actual en Cisternas (Litros Reales - Límite Físico)</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '15px', marginBottom: '30px' }}>
             {tanques.length > 0 ? (
               tanques.map(t => (
                 <div key={t.id} style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155' }}>
                   <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', color: '#38bdf8' }}>{t.nombre}</h3>
                   <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#4ade80' }}>{t.stock_real.toFixed(0)} Lts</div>
-                  <p style={{ fontSize: '12px', color: '#94a3b8', margin: '6px 0 0 0' }}>Capacidad: {t.capacidad} Lts</p>
+                  <p style={{ fontSize: '12px', color: '#94a3b8', margin: '6px 0 0 0' }}>Capacidad Máxima: {t.capacidad} Lts</p>
                   <div style={{ fontSize: '11px', color: '#f59e0b', marginTop: '6px', borderTop: '1px solid #334155', paddingTop: '6px' }}>
-                    Ingresos (IPF/Transf): +{t.totalEntradas.toFixed(0)} L<br/>
-                    Salidas (Consumos/Transf): -{t.totalSalidas.toFixed(0)} L
+                    Compras (IPF): +{t.totalEntradas.toFixed(0)} L<br/>
+                    Salidas: -{t.totalSalidas.toFixed(0)} L
                   </div>
                 </div>
               ))
@@ -423,9 +436,7 @@ export default function App() {
             )}
           </div>
 
-          <h2 style={{ fontSize: '16px', marginBottom: '15px', color: '#cbd5e1' }}>Consumo por Vehículo / Máquina (Gráfico de Barras)</h2>
-          
-          {/* Panel de Filtros para el Gráfico */}
+          {/* Panel de Filtros para los Gráficos */}
           <div style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Año</label>
@@ -452,26 +463,55 @@ export default function App() {
             </div>
           </div>
 
-          {/* Gráfico de Barras Horizontales */}
-          <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
-            {consumoOrdenado.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {consumoOrdenado.map(([vehiculo, litros], idx) => {
-                  const porcentaje = Math.max(4, (litros / maxLitrosConsumo) * 100);
-                  return (
-                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                      <div style={{ width: '90px', fontSize: '13px', fontWeight: 'bold', color: '#38bdf8', textAlign: 'right' }}>{vehiculo}</div>
-                      <div style={{ flex: 1, backgroundColor: '#0f172a', borderRadius: '6px', height: '24px', position: 'relative', overflow: 'hidden', border: '1px solid #334155' }}>
-                        <div style={{ width: `${porcentaje}%`, backgroundColor: '#f59e0b', height: '100%', borderRadius: '4px', transition: 'width 0.4s ease' }}></div>
-                        <span style={{ position: 'absolute', right: '10px', top: '2px', fontSize: '12px', fontWeight: 'bold', color: '#fff' }}>{litros.toFixed(1)} Lts</span>
+          {/* Dos columnas para los gráficos: Consumo Total y Rendimiento Promedio */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(450px, 1fr))', gap: '20px' }}>
+            
+            {/* Gráfico 1: Consumo Total (Litros) */}
+            <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+              <h3 style={{ fontSize: '16px', marginBottom: '15px', color: '#f59e0b' }}>📊 Consumo Total por Máquina / Vehículo (Litros)</h3>
+              {consumoOrdenado.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '400px', overflowY: 'auto' }}>
+                  {consumoOrdenado.map(([vehiculo, litros], idx) => {
+                    const porcentaje = Math.max(4, (litros / maxLitrosConsumo) * 100);
+                    return (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ width: '80px', fontSize: '12px', fontWeight: 'bold', color: '#38bdf8', textAlign: 'right' }}>{vehiculo}</div>
+                        <div style={{ flex: 1, backgroundColor: '#0f172a', borderRadius: '6px', height: '22px', position: 'relative', overflow: 'hidden', border: '1px solid #334155' }}>
+                          <div style={{ width: `${porcentaje}%`, backgroundColor: '#f59e0b', height: '100%', borderRadius: '4px' }}></div>
+                          <span style={{ position: 'absolute', right: '8px', top: '2px', fontSize: '11px', fontWeight: 'bold', color: '#fff' }}>{litros.toFixed(1)} L</span>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos registrados para los filtros seleccionados.</p>
-            )}
+                    );
+                  })}
+                </div>
+              ) : (
+                <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos registrados.</p>
+              )}
+            </div>
+
+            {/* Gráfico 2: Rendimiento Promedio (Litros / Hora o Km) */}
+            <div style={{ backgroundColor: '#1e293b', padding: '25px', borderRadius: '12px', border: '1px solid #334155' }}>
+              <h3 style={{ fontSize: '16px', marginBottom: '15px', color: '#38bdf8' }}>📈 Rendimiento Promedio (L / hs o L / km)</h3>
+              {rendimientoOrdenado.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '400px', overflowY: 'auto' }}>
+                  {rendimientoOrdenado.map(([vehiculo, rend], idx) => {
+                    const porcentaje = Math.max(4, (rend / maxRendimiento) * 100);
+                    return (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ width: '80px', fontSize: '12px', fontWeight: 'bold', color: '#f59e0b', textAlign: 'right' }}>{vehiculo}</div>
+                        <div style={{ flex: 1, backgroundColor: '#0f172a', borderRadius: '6px', height: '22px', position: 'relative', overflow: 'hidden', border: '1px solid #334155' }}>
+                          <div style={{ width: `${porcentaje}%`, backgroundColor: '#38bdf8', height: '100%', borderRadius: '4px' }}></div>
+                          <span style={{ position: 'absolute', right: '8px', top: '2px', fontSize: '11px', fontWeight: 'bold', color: '#fff' }}>{rend.toFixed(2)} L/u</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay suficientes datos de rendimiento en el lote.</p>
+              )}
+            </div>
+
           </div>
         </div>
       )}
