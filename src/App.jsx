@@ -100,7 +100,7 @@ export default function App() {
       const nombreTanque = (t.nombre || '').toLowerCase();
 
       cargasData.forEach(c => {
-        // Priorizar Litros Reales sobre Litros Indicados
+        // Priorizar Litros Reales del Excel
         const litros = parseFloat(c['Litros Reales'] || c['Litros Indicados'] || 0);
         const origenCarga = (c.Origen || '').toLowerCase();
         const destinoCarga = (c['Destino / Equipo'] || '').toLowerCase();
@@ -137,6 +137,7 @@ export default function App() {
         }
       });
 
+      // Cálculo exacto que permite saldos negativos en caso de faltantes
       const stockReal = totalEntradas - totalSalidas;
 
       return { 
@@ -296,49 +297,4 @@ export default function App() {
       })).filter(item => item["Litros Indicados"] > 0);
 
       const { error } = await supabase.from('cargas_diarias').insert(filasAInsertar);
-      if (error) throw error;
-
-      alert 14/10.
-
----
-
-### 1. Descarga del archivo CSV limpio
-
-Aquí tienes el archivo CSV listo, procesado y libre de columnas auxiliares o gráficos laterales para importarlo directamente a la aplicación:
-
-[cargas_diarias_limpio_14-10.csv](file-tag: code-generated-file-4f2880dc-cff8-4bde-8eee-447779e37b03)
-
----
-
-### 2. Hallazgos clave en tu Excel (Pestaña `04_Tanques` vs `05_Carga Diaria`)
-
-Al examinar las fórmulas internas de tu planilla, descubrí **por qué los números de stock no coincidían con la realidad física**:
-
-1. **Factores de Calibración (Litros Indicados vs. Litros Reales)**:
-   * Tu Excel convierte los **Litros Indicados** por el surtidor a **Litros Reales** multiplicando por el factor de calibración:
-     * Para la **Cisterna Principal (PPL)** usa un factor de **`0.909091`**.
-     * Para la **Cisterna Camión** usa un factor de **`0.9852`**.
-   * En los datos cargados en la web, si se toman únicamente los *Litros Indicados* sin aplicar la corrección del surtidor, se genera una diferencia acumulada importante en los volúmenes finales.
-
-2. **Balances de Stock calculados por tu Excel en `04_Tanques`**:
-   * **Cisterna Principal (PPL)**:
-     * Entradas Reales: **128.454,5 L**
-     * Salidas Reales: **122.078,1 L**
-     * **Stock Actual en Excel**: **+6.376,4 L**
-   * **Cisterna Camión**:
-     * Entradas Reales: **114.917,0 L**
-     * Salidas Reales: **115.887,9 L**
-     * **Stock Actual en Excel**: **-970,9 L** (un déficit acumulado de ~970 L por consumos no compensados con transferencias).
-
----
-
-### 3. Solución para ajustar el proyecto web
-
-Para que el proyecto calcule los saldos exactamente igual que tu planilla Excel, debemos actualizar la función de cálculo en `src/App.jsx` para que:
-
-1. **Utilice los `Litros Reales`** (o aplique el factor de calibración correspondiente a cada cisterna si la carga es manual).
-2. **Contabilice las Transferencias**:
-   * Resten de la **Cisterna Principal (PPL)** en `Litros Reales` ($\text{Indicados} \times 0.909091$).
-   * Sumen a la **Cisterna Camión** en `Litros Reales` ($\text{Indicados} \times 0.9852$).
-
-Si deseas aplicar esta actualización en el código de React, confirmamelo y ajustamos `src/App.jsx` para que coincida exactamente con la planilla al 14/10.
+      if
