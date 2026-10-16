@@ -100,7 +100,7 @@ export default function App() {
       const nombreTanque = (t.nombre || '').toLowerCase();
 
       cargasData.forEach(c => {
-        // Priorizar Litros Reales sobre Litros Indicados para ser exactos
+        // Usamos Litros Reales para coincidir con tu Excel, si no hay, usamos Litros Indicados
         const litros = parseFloat(c['Litros Reales'] || c['Litros Indicados'] || 0);
         const origenCarga = (c.Origen || '').toLowerCase();
         const destinoCarga = (c['Destino / Equipo'] || '').toLowerCase();
@@ -116,193 +116,7 @@ export default function App() {
           }
         }
 
-        // 2. TRANSFERENCIAS
-        if (tipoMov.includes('transferencia')) {
-          if (nombreTanque.includes('principal') || nombreTanque.includes('ppl')) {
-            totalSalidas += litros; // Sale de la principal
-          }
-          if (nombreTanque.includes('camión') || nombreTanque.includes('camion')) {
-            totalEntradas += litros; // Entra al camión
-          }
-        }
-
-        // 3. CONSUMOS A VEHÍCULOS
-        if (tipoMov.includes('consumo')) {
-          if (nombreTanque.includes('camión') && (origenCarga.includes('camión') || origenCarga.includes('camion'))) {
-            totalSalidas += litros;
-          }
-          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && (origenCarga.includes('principal') || origenCarga.includes('ppl'))) {
-            totalSalidas += litros;
-          }
-        }
-      });
-
-      // Stock Real permitiendo números negativos para detectar errores
-      const stockReal = totalEntradas - totalSalidas;
-
-      return { 
-        ...t, 
-        stock_real: stockReal, 
-        capacidad: capacidad, 
-        totalEntradas, 
-        totalSalidas 
-      };
-    });
-
-    setTanques(tanquesCalculados);
-  }
-
-  function extraerEquipos(cargasArray) {
-    const equiposMap = {};
-    cargasArray.forEach(c => {
-      const eqCode = c.Equipo || c['Destino / Equipo'];
-      if (eqCode && eqCode.trim() !== '' && !eqCode.toLowerCase().includes('cisterna') && !eqCode.toLowerCase().includes('plaasf') && !eqCode.toLowerCase().includes('ppl') && !equiposMap[eqCode]) {
-        const esMaquina = eqCode.startsWith('M') || eqCode.startsWith('CAT') || eqCode.startsWith('P');
-        equiposMap[eqCode] = {
-          codigo: eqCode,
-          descripcion: c['Descripción Equipo'] || (esMaquina ? 'Maquinaria Pesada' : 'Vehículo / Camión'),
-          tipo: esMaquina ? 'Máquina' : 'Camión / Vehículo',
-          obra_predeterminada: c.Obra || 'RN40',
-          tipo_combustible: c['Tipo Combustible'] || 'Infinia Diesel'
-        };
-      }
-    });
-
-    setEquipos(prev => {
-      const codigosExistentes = new Set(prev.map(p => p.codigo));
-      const nuevos = Object.values(equiposMap).filter(e => !codigosExistentes.has(e.codigo));
-      return [...prev, ...nuevos];
-    });
-  }
-
-  const handleSeleccionEquipoForm = (codigoEq) => {
-    const eqEncontrado = equipos.find(e => e.codigo === codigoEq);
-    const choferAsignado = choferTe pido mis más sinceras disculpas. Tienes toda la razón en estar frustrado; el sistema cortó el código anteriormente y luego arrojó un error automático en mi última respuesta, lo que arruinó el avance que traíamos. 
-
-No vamos a dar más vueltas. He revisado todo el historial, los cálculos de tu Excel (donde vimos que el stock real se saca restando salidas a las entradas usando los **Litros Reales**) y los filtros desplegables.
-
-Aquí tienes el **código completo y definitivo de `App.jsx`**, de principio a fin, sin cortes y listo para que lo copies con el botón y lo pegues directamente.
-
-```javascript
-import React, { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = '[https://vlllvmklgokwwuvnasuo.supabase.co](https://vlllvmklgokwwuvnasuo.supabase.co)';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsbGx2bWtsZ29rd3d1dm5hc3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1NTgxMzgsImV4cCI6MjEwNzEzNDEzOH0.Q5rP9pu0bW-1F16mBsbn69t95TzeB437PmWHPEp_Mzc';
-
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
-
-export default function App() {
-  const [tanques, setTanques] = useState([]);
-  const [todasLasCargas, setTodasLasCargas] = useState([]);
-  const [equipos, setEquipos] = useState([]);
-  const [choferes, setChoferes] = useState([
-    { id: 1, nombre: 'IGNACIO GONZALEZ', equipo_habitual: 'R059' },
-    { id: 2, nombre: 'HECTOR PACHECO', equipo_habitual: 'M047' },
-    { id: 3, nombre: 'JORGE CANO', equipo_habitual: 'M041' },
-    { id: 4, nombre: 'MARCELO GUAJARDO', equipo_habitual: 'M024' },
-    { id: 5, nombre: 'ENZO FERNANDEZ', equipo_habitual: 'CFN735' },
-    { id: 6, nombre: 'MANUEL DINATALE', equipo_habitual: 'M029' }
-  ]);
-  const [mantenimientos, setMantenimientos] = useState([]);
-  const [pestana, setPestana] = useState('dashboard');
-  const [loading, setLoading] = useState(false);
-
-  // Filtros generales de historial
-  const [filtroAnio, setFiltroAnio] = useState('');
-  const [filtroMes, setFiltroMes] = useState('');
-  const [filtroDia, setFiltroDia] = useState('');
-
-  // Filtros interactivos para el Dashboard
-  const [dashAnio, setDashAnio] = useState('');
-  const [dashMes, setDashMes] = useState('');
-  const [dashObra, setDashObra] = useState('');
-  const [dashDesde, setDashDesde] = useState('');
-  const [dashHasta, setDashHasta] = useState('');
-
-  const [formCarga, setFormCarga] = useState({
-    Fecha: new Date().toISOString().split('T')[0],
-    "Tipo Movimiento": 'Consumo',
-    Origen: 'Cisterna Camión',
-    Equipo: '',
-    Chofer: '',
-    Obra: 'RN40',
-    "Tipo Combustible": 'Infinia Diesel',
-    "Litros Indicados": '',
-    Orometro: '',
-    Kilometros: '',
-    Observaciones: ''
-  });
-
-  const [nuevoChofer, setNuevoChofer] = useState({ nombre: '', equipo_habitual: '' });
-  const [nuevoEquipo, setNuevoEquipo] = useState({ codigo: '', descripcion: '', tipo: 'Máquina', obra_predeterminada: 'RN40', tipo_combustible: 'Infinia Diesel' });
-  const [formService, setFormService] = useState({ codigo_equipo: '', hm_km_actual: '', tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
-
-  const [excelRows, setExcelRows] = useState([]);
-  const [excelName, setExcelName] = useState('');
-  const [subiendoExcel, setSubiendoExcel] = useState(false);
-
-  useEffect(() => {
-    if (supabase) {
-      fetchDatos();
-    }
-  }, []);
-
-  async function fetchDatos() {
-    setLoading(true);
-    try {
-      const { data: tanquesData } = await supabase.from('tanques').select('*');
-      const { data: cargasData } = await supabase.from('cargas_diarias').select('*').order('id', { ascending: false });
-      const { data: equiposData } = await supabase.from('equipos').select('*');
-      const { data: mantData } = await supabase.from('mantenimiento').select('*');
-
-      if (cargasData) {
-        setTodasLasCargas(cargasData);
-        extraerEquipos(cargasData);
-      }
-      if (equiposData && equiposData.length > 0) {
-        setEquipos(equiposData);
-      }
-      if (mantData) {
-        setMantenimientos(mantData);
-      }
-
-      const listaTanquesBase = (tanquesData && tanquesData.length > 0) ? tanquesData : [
-        { id: 1, nombre: 'Cisterna Principal (PPL)', capacidad_l: 8500 },
-        { id: 2, nombre: 'Cisterna Camión', capacidad_l: 4000 },
-        { id: 3, nombre: 'PLAASF', capacidad_l: 2000 }
-      ];
-
-      calcularStockTanques(listaTanquesBase, cargasData || []);
-    } catch (e) { console.error(e); }
-    setLoading(false);
-  }
-
-  function calcularStockTanques(tanquesBase, cargasData) {
-    const tanquesCalculados = tanquesBase.map(t => {
-      const capacidad = parseFloat(t.capacidad_l || 8500);
-      let totalSalidas = 0;
-      let totalEntradas = 0;
-      const nombreTanque = (t.nombre || '').toLowerCase();
-
-      cargasData.forEach(c => {
-        // Priorizar Litros Reales sobre Litros Indicados para exactitud
-        const litros = parseFloat(c['Litros Reales'] || c['Litros Indicados'] || 0);
-        const origenCarga = (c.Origen || '').toLowerCase();
-        const destinoCarga = (c['Destino / Equipo'] || '').toLowerCase();
-        const tipoMov = (c['Tipo Movimiento'] || '').toLowerCase();
-
-        // 1. COMPRAS E INGRESOS
-        if (tipoMov.includes('compra')) {
-          if (nombreTanque.includes('camión') && (destinoCarga.includes('camión') || destinoCarga.includes('camion') || origenCarga.includes('dafre'))) {
-            totalEntradas += litros;
-          }
-          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && (destinoCarga.includes('principal') || destinoCarga.includes('ppl') || origenCarga.includes('ypf'))) {
-            totalEntradas += litros;
-          }
-        }
-
-        // 2. TRANSFERENCIAS (PPL -> Camión)
+        // 2. TRANSFERENCIAS (De PPL a Camión)
         if (tipoMov.includes('transferencia')) {
           if (nombreTanque.includes('principal') || nombreTanque.includes('ppl')) {
             totalSalidas += litros;
@@ -323,8 +137,8 @@ export default function App() {
         }
       });
 
-      // Stock puede ser negativo para detectar errores de carga
-      const stockReal = totalEntradas - totalSalidas;
+      // Stock calculado permitiendo negativos para auditoría
+      const stockReal = capacidad + totalEntradas - totalSalidas;
 
       return { 
         ...t, 
@@ -472,6 +286,7 @@ export default function App() {
         "Tipo Combustible": row[8] || 'Infinia Diesel',
         "Litros Indicados": parseFloat(row[9]?.replace(',', '.')) || 0,
         "Factor Calibracion": parseFloat(row[10]?.replace(',', '.')) || 1,
+        // Al subir desde CSV tomamos Litros Reales, o si está vacío calculamos con factor/indicados
         "Litros Reales": parseFloat(row[11]?.replace(',', '.')) || parseFloat(row[9]?.replace(',', '.')) || 0,
         "Control": row[12] || '',
         "Orometro": row[13] || '',
@@ -485,4 +300,4 @@ export default function App() {
       const { error } = await supabase.from('cargas_diarias').insert(filasAInsertar);
       if (error) throw error;
 
-      alert(`¡
+      alert(`¡L
