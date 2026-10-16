@@ -100,7 +100,7 @@ export default function App() {
       const nombreTanque = (t.nombre || '').toLowerCase();
 
       cargasData.forEach(c => {
-        // Usamos Litros Reales para coincidir con tu Excel, si no hay, usamos Litros Indicados
+        // Se utilizan siempre los Litros Reales para coincidir con tu Excel
         const litros = parseFloat(c['Litros Reales'] || c['Litros Indicados'] || 0);
         const origenCarga = (c.Origen || '').toLowerCase();
         const destinoCarga = (c['Destino / Equipo'] || '').toLowerCase();
@@ -108,15 +108,15 @@ export default function App() {
 
         // 1. COMPRAS E INGRESOS
         if (tipoMov.includes('compra')) {
-          if (nombreTanque.includes('camión') && (destinoCarga.includes('camión') || destinoCarga.includes('camion') || origenCarga.includes('dafre'))) {
+          if (nombreTanque.includes('camión') && origenCarga.includes('dafre')) {
             totalEntradas += litros;
           }
-          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && (destinoCarga.includes('principal') || destinoCarga.includes('ppl') || origenCarga.includes('ypf'))) {
+          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && origenCarga.includes('ypf')) {
             totalEntradas += litros;
           }
         }
 
-        // 2. TRANSFERENCIAS (De PPL a Camión)
+        // 2. TRANSFERENCIAS
         if (tipoMov.includes('transferencia')) {
           if (nombreTanque.includes('principal') || nombreTanque.includes('ppl')) {
             totalSalidas += litros;
@@ -137,8 +137,8 @@ export default function App() {
         }
       });
 
-      // Stock calculado permitiendo negativos para auditoría
-      const stockReal = capacidad + totalEntradas - totalSalidas;
+      // Cálculo de stock real permitiendo negativos para identificar errores de carga
+      const stockReal = totalEntradas > 0 || totalSalidas > 0 ? (totalEntradas - totalSalidas) : capacidad;
 
       return { 
         ...t, 
@@ -286,7 +286,6 @@ export default function App() {
         "Tipo Combustible": row[8] || 'Infinia Diesel',
         "Litros Indicados": parseFloat(row[9]?.replace(',', '.')) || 0,
         "Factor Calibracion": parseFloat(row[10]?.replace(',', '.')) || 1,
-        // Al subir desde CSV tomamos Litros Reales, o si está vacío calculamos con factor/indicados
         "Litros Reales": parseFloat(row[11]?.replace(',', '.')) || parseFloat(row[9]?.replace(',', '.')) || 0,
         "Control": row[12] || '',
         "Orometro": row[13] || '',
@@ -299,5 +298,3 @@ export default function App() {
 
       const { error } = await supabase.from('cargas_diarias').insert(filasAInsertar);
       if (error) throw error;
-
-      alert(`¡L
