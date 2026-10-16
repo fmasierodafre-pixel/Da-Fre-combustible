@@ -1,10 +1,45 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-
 const supabaseUrl = 'https://vlllvmklgokwwuvnasuo.supabase.co';
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsbGx2bWtsZ29rd3d1dm5hc3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1NTgxMzgsImV4cCI6MjEwNzEzNDEzOH0.Q5rP9pu0bW-1F16mBsbn69t95TzeB437PmWHPEp_Mzc';
-
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// ---------- Utilidades de importación (CSV exportado de Excel en español) ----------
+function parseCSV(text) {
+  text = text.replace(/^\uFEFF/, '');
+  const primera = text.split('\n')[0] || '';
+  const delim = (primera.match(/;/g) || []).length >= (primera.match(/,/g) || []).length ? ';' : ',';
+  const rows = []; let row = [], cur = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === delim) { row.push(cur); cur = ''; }
+    else if (ch === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+    else if (ch !== '\r') cur += ch;
+  }
+  if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter(r => r.some(v => v.trim() !== ''));
+}
+// Acepta 20/07/2026 o 2026-07-20 y devuelve 2026-07-20
+function aISO(v) {
+  v = (v || '').trim();
+  let m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  m = v.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? m[0] : '';
+}
+// Acepta 1569, 216,7 o 1.569,5
+function aNum(v) {
+  if (v === undefined || v === null) return null;
+  let s = String(v).trim();
+  if (!s || s === '-') return null;
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
+}
+function numTxt(v) { const n = aNum(v); return n === null ? '' : String(n); }
 
 export default function App() {
   const [tanques, setTanques] = useState([]);
@@ -22,17 +57,14 @@ export default function App() {
   const [pestana, setPestana] = useState('dashboard');
   const [loading, setLoading] = useState(false);
   const [esAdmin, setEsAdmin] = useState(true);
-
   const [filtroAnio, setFiltroAnio] = useState('');
   const [filtroMes, setFiltroMes] = useState('');
   const [filtroDia, setFiltroDia] = useState('');
-
   const [dashAnio, setDashAnio] = useState('');
   const [dashMes, setDashMes] = useState('');
   const [dashObra, setDashObra] = useState('');
   const [dashDesde, setDashDesde] = useState('');
   const [dashHasta, setDashHasta] = useState('');
-
   const [formCarga, setFormCarga] = useState({
     Fecha: new Date().toISOString().split('T')[0],
     "Tipo Movimiento": 'Consumo',
@@ -46,29 +78,40 @@ export default function App() {
     Kilometros: '',
     Observaciones: ''
   });
-
   const [nuevoChofer, setNuevoChofer] = useState({ nombre: '', equipo_habitual: '' });
   const [nuevoEquipo, setNuevoEquipo] = useState({ codigo: '', descripcion: '', tipo: 'Máquina', obra_predeterminada: 'RN40', tipo_combustible: 'Infinia Diesel' });
   const [formService, setFormService] = useState({ codigo_equipo: '', hm_km_actual: '', tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
-
   const [excelRows, setExcelRows] = useState([]);
   const [excelName, setExcelName] = useState('');
   const [subiendoExcel, setSubiendoExcel] = useState(false);
-
+  const [excelMsg, setExcelMsg] = useState('');
+  const [reemplazarTodo, setReemplazarTodo] = useState(true);
   useEffect(() => {
     if (supabase) {
       fetchDatos();
     }
   }, []);
-
+  async function traerTodasLasCargas() {
+    let todas = [], desde = 0;
+    const paso = 1000;
+    while (true) {
+      const { data, error } = await supabase.from('cargas_diarias').select('*').order('id', { ascending: false }).range(desde, desde + paso - 1);
+      if (error) throw error;
+      todas = todas.concat(data || []);
+      if (!data || data.length < paso) break;
+      desde += paso;
+    }
+    return todas;
+  }
   async function fetchDatos() {
     setLoading(true);
     try {
       const { data: tanquesData } = await supabase.from('tanques').select('*');
-      const { data: cargasData } = await supabase.from('cargas_diarias').select('*').order('id', { ascending: false });
+      const cargasData = await traerTodasLasCargas();
       const { data: equiposData } = await supabase.from('equipos').select('*');
       const { data: mantData } = await supabase.from('mantenimiento').select('*');
-
+      const { data: choferesData } = await supabase.from('choferes').select('*');
+      if (choferesData && choferesData.length > 0) setChoferes(choferesData);
       if (cargasData) {
         setTodasLasCargas(cargasData);
         extraerEquipos(cargasData);
@@ -79,73 +122,34 @@ export default function App() {
       if (mantData) {
         setMantenimientos(mantData);
       }
-
       const listaTanquesBase = (tanquesData && tanquesData.length > 0) ? tanquesData : [
-        { id: 1, nombre: 'Cisterna Principal (PPL)', capacidad_l: 8500 },
-        { id: 2, nombre: 'Cisterna Camión', capacidad_l: 4000 },
-        { id: 3, nombre: 'PLAASF', capacidad_l: 2000 }
+        { id: 1, nombre: 'Cisterna Principal (PPL)', capacidad_l: 8500, stock_inicial_l: 0, factor_calibracion: 0.9090909 },
+        { id: 2, nombre: 'Cisterna Camión', capacidad_l: 4000, stock_inicial_l: 0, factor_calibracion: 0.9852 },
+        { id: 3, nombre: 'PLAASF', capacidad_l: 2000, stock_inicial_l: 0, factor_calibracion: 1 }
       ];
-
       calcularStockTanques(listaTanquesBase, cargasData || []);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
-
   function calcularStockTanques(tanquesBase, cargasData) {
+    // Misma regla que 04_Tanques del Excel:
+    //   entradas = litros reales cuyo DESTINO es el tanque
+    //   salidas  = litros reales cuyo ORIGEN es el tanque
+    const litrosDe = (c) => parseFloat(c['Litros Reales'] ?? c['Litros Indicados'] ?? 0) || 0;
     const tanquesCalculados = tanquesBase.map(t => {
-      const capacidad = parseFloat(t.capacidad_l || t.stock_actual_l || 8500);
-      let totalSalidas = 0;
-      let totalEntradas = 0;
-      const nombreTanque = (t.nombre || '').toLowerCase();
-
+      const capacidad = parseFloat(t.capacidad_l) || 0;
+      const inicial = parseFloat(t.stock_inicial_l) || 0;
+      const nombre = (t.nombre || '').trim().toLowerCase();
+      let totalEntradas = 0, totalSalidas = 0;
       cargasData.forEach(c => {
-        const litros = parseFloat(c['Litros Reales'] || c['Litros Indicados'] || 0);
-        const origenCarga = (c.Origen || '').toLowerCase();
-        const destinoCarga = (c['Destino / Equipo'] || '').toLowerCase();
-        const tipoMov = (c['Tipo Movimiento'] || '').toLowerCase();
-
-        if (tipoMov.includes('compra')) {
-          if (nombreTanque.includes('camión') && (destinoCarga.includes('camión') || destinoCarga.includes('camion') || origenCarga.includes('dafre'))) {
-            totalEntradas += litros;
-          }
-          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && (destinoCarga.includes('principal') || destinoCarga.includes('ppl') || origenCarga.includes('ypf'))) {
-            totalEntradas += litros;
-          }
-        }
-
-        if (tipoMov.includes('transferencia')) {
-          if (nombreTanque.includes('principal') || nombreTanque.includes('ppl')) {
-            totalSalidas += litros;
-          }
-          if (nombreTanque.includes('camión') || nombreTanque.includes('camion')) {
-            totalEntradas += litros;
-          }
-        }
-
-        if (tipoMov.includes('consumo')) {
-          if (nombreTanque.includes('camión') && (origenCarga.includes('camión') || origenCarga.includes('camion'))) {
-            totalSalidas += litros;
-          }
-          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && (origenCarga.includes('principal') || origenCarga.includes('ppl'))) {
-            totalSalidas += litros;
-          }
-        }
+        if ((c['Destino / Equipo'] || '').trim().toLowerCase() === nombre) totalEntradas += litrosDe(c);
+        if ((c.Origen || '').trim().toLowerCase() === nombre) totalSalidas += litrosDe(c);
       });
-
-      const stockReal = totalEntradas - totalSalidas;
-
-      return { 
-        ...t, 
-        stock_real: stockReal, 
-        capacidad: capacidad, 
-        totalEntradas, 
-        totalSalidas 
-      };
+      if (nombre === 'plaasf') totalSalidas = totalEntradas; // igual que el Excel: la planta consume todo lo que recibe
+      return { ...t, stock_real: inicial + totalEntradas - totalSalidas, capacidad, totalEntradas, totalSalidas };
     });
-
     setTanques(tanquesCalculados);
   }
-
   function extraerEquipos(cargasArray) {
     const equiposMap = {};
     cargasArray.forEach(c => {
@@ -161,18 +165,15 @@ export default function App() {
         };
       }
     });
-
     setEquipos(prev => {
       const codigosExistentes = new Set(prev.map(p => p.codigo));
       const nuevos = Object.values(equiposMap).filter(e => !codigosExistentes.has(e.codigo));
       return [...prev, ...nuevos];
     });
   }
-
   const handleSeleccionEquipoForm = (codigoEq) => {
     const eqEncontrado = equipos.find(e => e.codigo === codigoEq);
     const choferAsignado = choferes.find(ch => ch.equipo_habitual === codigoEq);
-
     setFormCarga(prev => ({
       ...prev,
       Equipo: codigoEq,
@@ -181,12 +182,31 @@ export default function App() {
       "Tipo Combustible": eqEncontrado ? eqEncontrado.tipo_combustible || prev["Tipo Combustible"] : prev["Tipo Combustible"]
     }));
   };
-
   const handleGuardarCargaManual = async (e) => {
     e.preventDefault();
     if (!supabase) return;
     try {
-      const { error } = await supabase.from('cargas_diarias').insert([formCarga]);
+      const tipo = formCarga["Tipo Movimiento"];
+      const indicados = aNum(formCarga["Litros Indicados"]);
+      if (!indicados || indicados <= 0) throw new Error('Ingresá los litros indicados por el surtidor.');
+      if (tipo === 'Consumo' && !formCarga.Equipo) throw new Error('Elegí el equipo que recibe el combustible.');
+      const destino = tipo === 'Consumo' ? formCarga.Equipo
+        : (tipo === 'Transferencia' ? 'Cisterna Camión'
+        : (formCarga.Origen === 'Dafre (chiringuito)' ? 'Cisterna Camión' : 'Cisterna Principal (PPL)'));
+      const tanqueOrigen = tanques.find(t => t.nombre === formCarga.Origen);
+      const factor = tanqueOrigen && tanqueOrigen.factor_calibracion ? parseFloat(tanqueOrigen.factor_calibracion) : 1;
+      const registro = {
+        ...formCarga,
+        "Destino / Equipo": destino,
+        Equipo: tipo === 'Consumo' ? formCarga.Equipo : '',
+        "Litros Indicados": indicados,
+        "Factor Calibracion": factor,
+        "Litros Reales": Math.round(indicados * factor * 10) / 10,
+        Orometro: numTxt(formCarga.Orometro),
+        Kilometros: numTxt(formCarga.Kilometros),
+        ...(tipo !== 'Consumo' ? { Chofer: '', Obra: '' } : {})
+      };
+      const { error } = await supabase.from('cargas_diarias').insert([registro]);
       if (error) throw error;
       alert('¡Carga registrada con éxito!');
       setFormCarga({
@@ -208,16 +228,15 @@ export default function App() {
       alert('Error al guardar: ' + err.message);
     }
   };
-
-  const handleGuardarChofer = (e) => {
+  const handleGuardarChofer = async (e) => {
     e.preventDefault();
     if (!nuevoChofer.nombre) return;
     const ch = { id: Date.now(), nombre: nuevoChofer.nombre, equipo_habitual: nuevoChofer.equipo_habitual };
     setChoferes([...choferes, ch]);
+    try { await supabase.from('choferes').insert([{ nombre: ch.nombre, equipo_habitual: ch.equipo_habitual }]); } catch (err) { console.error(err); }
     setNuevoChofer({ nombre: '', equipo_habitual: '' });
     alert('¡Chofer agregado correctamente!');
   };
-
   const handleGuardarEquipo = async (e) => {
     e.preventDefault();
     if (!nuevoEquipo.codigo) return;
@@ -228,7 +247,6 @@ export default function App() {
     setNuevoEquipo({ codigo: '', descripcion: '', tipo: 'Máquina', obra_predeterminada: 'RN40', tipo_combustible: 'Infinia Diesel' });
     alert('¡Equipo creado exitosamente!');
   };
-
   const handleCambiarObraEquipo = async (codigoEquipo, nuevaObra) => {
     setEquipos(equipos.map(eq => eq.codigo === codigoEquipo ? { ...eq, obra_predeterminada: nuevaObra } : eq));
     try {
@@ -236,7 +254,6 @@ export default function App() {
       alert(`¡Obra actualizada a ${nuevaObra} para el equipo ${codigoEquipo}!`);
     } catch (err) { console.error(err); }
   };
-
   const handleRegistrarService = async (e) => {
     e.preventDefault();
     if (!formService.codigo_equipo) return;
@@ -255,61 +272,71 @@ export default function App() {
     setFormService({ codigo_equipo: '', hm_km_actual: '', tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
     alert('¡Registro de Service guardado correctamente!');
   };
-
-  const handleCargarArchivo = (e) => {
+  const handleCargarArchivo = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     setExcelName(file.name);
-
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const text = evt.target.result;
-      const lines = text.split('\n');
-      const rows = lines.map(line => line.split(';').map(val => val.trim().replace(/^"|"$/g, '')));
-      setExcelRows(rows);
-      alert(`¡Archivo leído con éxito! Se detectaron ${rows.length} filas.`);
-    };
-    reader.readAsText(file, 'UTF-8');
-  };
-
-  const procesarYSubirLote = async () => {
-    if (!supabase || excelRows.length === 0) return;
-    setSubiendoExcel(true);
+    setExcelMsg('Leyendo archivo...');
     try {
-      const filasAInsertar = excelRows.slice(1).map(row => ({
-        "Semana": row[0] || 'Semana Actual',
-        "Fecha": row[1] || new Date().toISOString().split('T')[0],
-        "Tipo Movimiento": row[2] || 'Consumo',
-        "Origen": row[3] || 'Cisterna Camión',
-        "Destino / Equipo": row[4] || '',
-        "Equipo": row[5] || row[4] || '',
-        "Chofer": row[6] || '',
-        "Obra": row[7] || '',
-        "Tipo Combustible": row[8] || 'Infinia Diesel',
-        "Litros Indicados": parseFloat(row[9]?.replace(',', '.')) || 0,
-        "Factor Calibracion": parseFloat(row[10]?.replace(',', '.')) || 1,
-        "Litros Reales": parseFloat(row[11]?.replace(',', '.')) || parseFloat(row[9]?.replace(',', '.')) || 0,
-        "Control": row[12] || '',
-        "Orometro": row[13] || '',
-        "Kilometros": row[14] || '',
-        "HM/KM Anterior": row[15] || '',
-        "Rendimiento (L/h o L/km)": row[16] || '',
-        "Observaciones": row[17] || '',
-        "Descripción Equipo": row[18] || ''
-      })).filter(item => item["Litros Indicados"] > 0);
-
-      const { error } = await supabase.from('cargas_diarias').insert(filasAInsertar);
-      if (error) throw error;
-
-      alert('¡Lote sincronizado con éxito con Supabase!');
-      setSubiendoExcel(false);
-      fetchDatos();
+      const buf = await file.arrayBuffer();
+      let text;
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+      catch { text = new TextDecoder('windows-1252').decode(buf); }
+      const rows = parseCSV(text);
+      setExcelRows(rows);
+      setExcelMsg(rows.length > 1 ? `Se leyeron ${rows.length - 1} filas. Ya podés sincronizar.` : 'El archivo no tiene datos.');
     } catch (err) {
-      alert('Error al subir: ' + err.message);
-      setSubiendoExcel(false);
+      setExcelRows([]);
+      setExcelMsg('No se pudo leer el archivo: ' + err.message);
     }
   };
-
+  const procesarYSubirLote = async () => {
+    if (!supabase || excelRows.length < 2) return;
+    setSubiendoExcel(true);
+    try {
+      const filas = excelRows.slice(1).map(row => {
+        const indicados = aNum(row[9]);
+        const factor = aNum(row[10]);
+        const reales = aNum(row[11]);
+        return {
+          "Semana": row[0] || '',
+          "Fecha": aISO(row[1]),
+          "Tipo Movimiento": row[2] || '',
+          "Origen": row[3] || '',
+          "Destino / Equipo": row[4] || '',
+          "Equipo": row[5] || '',
+          "Chofer": row[6] || '',
+          "Obra": row[7] || '',
+          "Tipo Combustible": row[8] || '',
+          "Litros Indicados": indicados,
+          "Factor Calibracion": factor,
+          "Litros Reales": reales !== null ? reales : (indicados !== null ? Math.round(indicados * (factor ?? 1) * 10) / 10 : null),
+          "Control": row[12] || '',
+          "Orometro": numTxt(row[13]),
+          "Kilometros": numTxt(row[14]),
+          "HM/KM Anterior": numTxt(row[15]),
+          "Rendimiento (L/h o L/km)": numTxt(row[16]),
+          "Observaciones": row[17] || '',
+          "Descripción Equipo": row[18] || ''
+        };
+      }).filter(f => f.Fecha && (f["Litros Reales"] || 0) > 0);
+      if (filas.length === 0) throw new Error('No se encontraron filas válidas (fechas DD/MM/AAAA o AAAA-MM-DD y litros reales mayores a 0).');
+      if (reemplazarTodo) {
+        const { error: errDel } = await supabase.from('cargas_diarias').delete().gte('id', 0);
+        if (errDel) throw errDel;
+      }
+      for (let i = 0; i < filas.length; i += 200) {
+        const { error } = await supabase.from('cargas_diarias').insert(filas.slice(i, i + 200));
+        if (error) throw error;
+        setExcelMsg(`Subiendo... ${Math.min(i + 200, filas.length)} de ${filas.length}`);
+      }
+      setExcelMsg(`✅ Listo: ${filas.length} movimientos cargados en Supabase.`);
+      await fetchDatos();
+    } catch (err) {
+      setExcelMsg('❌ Error al subir: ' + (err.message || JSON.stringify(err)));
+    }
+    setSubiendoExcel(false);
+  };
   const exportarACSV = (arrayDatos, nombreArchivo) => {
     if (!arrayDatos || arrayDatos.length === 0) {
       alert('No hay datos para exportar.');
@@ -333,7 +360,6 @@ export default function App() {
     link.click();
     document.body.removeChild(link);
   };
-
   const aniosDisponibles = [...new Set(todasLasCargas.map(c => c.Fecha ? c.Fecha.split('-')[0] : '').filter(Boolean))].sort().reverse();
   const mesesDisponibles = [
     { num: '01', nombre: 'Enero' }, { num: '02', nombre: 'Febrero' }, { num: '03', nombre: 'Marzo' },
@@ -342,41 +368,34 @@ export default function App() {
     { num: '10', nombre: 'Octubre' }, { num: '11', nombre: 'Noviembre' }, { num: '12', nombre: 'Diciembre' }
   ];
   const obrasDisponibles = [...new Set(todasLasCargas.map(c => c.Obra).filter(Boolean))].sort();
-
   const cargasFiltradas = todasLasCargas.filter(c => {
     if (!c.Fecha) return true;
     const fechaCarga = c.Fecha.split('T')[0];
     const anioCarga = fechaCarga.split('-')[0] || '';
     const mesCarga = fechaCarga.split('-')[1] || '';
     const diaCarga = fechaCarga.split('-')[2] || '';
-
     const matchAnio = filtroAnio ? anioCarga === filtroAnio : true;
     const matchMes = filtroMes ? mesCarga === filtroMes || mesCarga === `0${filtroMes}`.slice(-2) : true;
     const matchDia = filtroDia ? diaCarga === filtroDia || diaCarga === `0${filtroDia}`.slice(-2) : true;
     return matchAnio && matchMes && matchDia;
   });
-
   const cargasDashboardFiltradas = todasLasCargas.filter(c => {
     if (!c.Fecha) return true;
     const fechaCarga = c.Fecha.split('T')[0];
     const anioCarga = fechaCarga.split('-')[0] || '';
     const mesCarga = fechaCarga.split('-')[1] || '';
-    
     const matchAnio = dashAnio ? anioCarga === dashAnio : true;
-    const matchMes = dashMes ? mesCarga === mesCarga || mesCarga === `0${dashMes}`.slice(-2) : true;
+    const matchMes = dashMes ? mesCarga === `0${dashMes}`.slice(-2) : true;
     const matchObra = dashObra ? (c.Obra || '').toLowerCase().trim() === dashObra.toLowerCase().trim() : true;
-    
     let matchRango = true;
     if (dashDesde && fechaCarga < dashDesde) matchRango = false;
     if (dashHasta && fechaCarga > dashHasta) matchRango = false;
-
     return matchAnio && matchMes && matchObra && matchRango;
   });
-
   const consumoPorVehiculoDash = {};
   const rendimientoPorVehiculoDash = {};
   const consumoGeneradores = {};
-
+  const rendSum = {}, rendCnt = {};
   cargasDashboardFiltradas.forEach(c => {
     const eq = c.Equipo || c['Destino / Equipo'];
     const obra = (c.Obra || '').toUpperCase();
@@ -385,15 +404,15 @@ export default function App() {
       if (!eqUpper.includes('CISTERNA') && !eqUpper.includes('PLAASF') && !eqUpper.includes('PPL')) {
         const litros = parseFloat(c['Litros Reales'] || c['Litros Indicados'] || 0);
         consumoPorVehiculoDash[eq] = (consumoPorVehiculoDash[eq] || 0) + litros;
-
         if (eqUpper.includes('GEN')) {
           consumoGeneradores[eq] = (consumoGeneradores[eq] || 0) + litros;
         }
-
         const rendStr = c['Rendimiento (L/h o L/km)'] || '0';
         const rendVal = parseFloat(rendStr.toString().replace(',', '.')) || 0;
-        if (rendVal > 0) {
-          rendimientoPorVehiculoDash[eq] = rendimientoPorVehiculoDash[eq] ? (rendimientoPorVehiculoDash[eq] + rendVal) / 2 : rendVal;
+        if (rendVal > 0 && (parseFloat(c['HM/KM Anterior']) || 0) > 0) {
+          rendSum[eq] = (rendSum[eq] || 0) + rendVal;
+          rendCnt[eq] = (rendCnt[eq] || 0) + 1;
+          rendimientoPorVehiculoDash[eq] = rendSum[eq] / rendCnt[eq];
         }
       }
     }
@@ -402,36 +421,29 @@ export default function App() {
       consumoPorVehiculoDash['PLANTA ASFALTO'] = (consumoPorVehiculoDash['PLANTA ASFALTO'] || 0) + litros;
     }
   });
-
   const consumoOrdenado = Object.entries(consumoPorVehiculoDash).sort((a, b) => b[1] - a[1]);
   const maxLitrosConsumo = consumoOrdenado.length > 0 ? consumoOrdenado[0][1] : 1;
-
   const generadoresOrdenado = Object.entries(consumoGeneradores).sort((a, b) => b[1] - a[1]);
   const maxGen = generadoresOrdenado.length > 0 ? generadoresOrdenado[0][1] : 1;
-
   const rendimientoOrdenado = Object.entries(rendimientoPorVehiculoDash).sort((a, b) => b[1] - a[1]);
   const maxRendimiento = rendimientoOrdenado.length > 0 ? rendimientoOrdenado[0][1] : 1;
-
   const estadoMantenimientoEquipos = equipos.map(eq => {
     const cargasEq = todasLasCargas.filter(c => (c.Equipo === eq.codigo || c['Destino / Equipo'] === eq.codigo));
-    let ultimoLectura = 0;
+    let ultimoLectura = 0, primerLectura = Infinity;
     cargasEq.forEach(c => {
       const val = parseFloat(c.Orometro || c.Kilometros || 0);
       if (val > ultimoLectura) ultimoLectura = val;
+      if (val > 0 && val < primerLectura) primerLectura = val;
     });
-
+    if (primerLectura === Infinity) primerLectura = ultimoLectura;
     const esMaquina = eq.tipo === 'Máquina' || eq.codigo.startsWith('M') || eq.codigo.startsWith('CAT') || eq.codigo.startsWith('P') || eq.codigo.startsWith('GEN');
-    const intervaloService = esMaquina ? 250 : 400;
-
-    const serviceRegistrado = mantenimientos.find(m => m.codigo_equipo === eq.codigo);
-    const ultimoServiceLectura = serviceRegistrado ? parseFloat(serviceRegistrado.ultimo_hm_km || 0) : 0;
-
+    const intervaloService = 400; // igual que 07_Mantenimiento del Excel (primer registro + 400)
+    const serviceRegistrado = mantenimientos.filter(m => m.codigo_equipo === eq.codigo).sort((a, b) => (parseFloat(b.ultimo_hm_km) || 0) - (parseFloat(a.ultimo_hm_km) || 0))[0];
+    const ultimoServiceLectura = serviceRegistrado ? parseFloat(serviceRegistrado.ultimo_hm_km || 0) : primerLectura;
     const horasDesdeUltimoService = ultimoLectura - ultimoServiceLectura;
     const horasRestantes = intervaloService - horasDesdeUltimoService;
-
     let estado = 'OK';
     let colorEstado = '#4ade80';
-
     if (horasRestantes <= 0) {
       estado = 'VENCIDO - REALIZAR SERVICE';
       colorEstado = '#ef4444';
@@ -439,10 +451,8 @@ export default function App() {
       estado = `ALERTA (${horasRestantes.toFixed(0)} hs restantes)`;
       colorEstado = '#f59e0b';
     }
-
     return { ...eq, ultimoLectura, intervaloService, ultimoServiceLectura, horasRestantes: Math.max(0, horasRestantes), estado, colorEstado };
   });
-
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0b1329', color: '#f8fafc', padding: '20px', fontFamily: 'sans-serif' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '15px', backgroundColor: '#131b31', padding: '15px 25px', borderRadius: '10px', borderBottom: '3px solid #1e3a8a' }}>
@@ -464,7 +474,6 @@ export default function App() {
           </button>
         </div>
       </header>
-
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '25px', backgroundColor: '#131b31', padding: '10px', borderRadius: '8px' }}>
         <button onClick={() => setPestana('dashboard')} style={{ background: pestana === 'dashboard' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'dashboard' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Dashboard</button>
         <button onClick={() => setPestana('historial')} style={{ background: pestana === 'historial' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'historial' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Historial y Filtros</button>
@@ -474,7 +483,6 @@ export default function App() {
         <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'mantenimiento' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Mantenimiento</button>
         {esAdmin && <button onClick={() => setPestana('excel')} style={{ background: pestana === 'excel' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'excel' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Excel / CSV</button>}
       </div>
-
       {pestana === 'dashboard' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
@@ -505,7 +513,6 @@ export default function App() {
               </div>
             )}
           </div>
-
           <div style={{ backgroundColor: '#131b31', padding: '15px', borderRadius: '10px', border: '1px solid #1e3a8a', marginBottom: '20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Año</label>
@@ -540,7 +547,6 @@ export default function App() {
               <button onClick={() => { setDashAnio(''); setDashMes(''); setDashObra(''); setDashDesde(''); setDashHasta(''); }} style={{ background: '#334155', color: '#fff', border: 'none', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>Limpiar Filtros</button>
             </div>
           </div>
-
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '20px' }}>
             <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
@@ -566,7 +572,6 @@ export default function App() {
                 <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos registrados.</p>
               )}
             </div>
-
             <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                 <h3 style={{ fontSize: '15px', color: '#38bdf8', margin: 0 }}>⚡ Consumo de Generadores (GEN01 / GEN02)</h3>
@@ -591,7 +596,6 @@ export default function App() {
                 <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos de generadores registrados.</p>
               )}
             </div>
-
             <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                 <h3 style={{ fontSize: '15px', color: '#38bdf8', margin: 0 }}>📈 Rendimiento Promedio (L / hs o L / km)</h3>
@@ -619,14 +623,12 @@ export default function App() {
           </div>
         </div>
       )}
-
       {pestana === 'historial' && (
         <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
             <h2 style={{ fontSize: '18px', color: '#f59e0b', margin: 0 }}>Historial Completo y Filtros por Fecha</h2>
             <button onClick={() => exportarACSV(cargasFiltradas, 'historial_cargas')} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '8px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>📥 Descargar Historial (CSV)</button>
           </div>
-          
           <div style={{ display: 'flex', gap: '15px', marginBottom: '20px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1', display: 'block', marginBottom: '5px' }}>Año</label>
@@ -650,7 +652,6 @@ export default function App() {
               <button onClick={() => { setFiltroAnio(''); setFiltroMes(''); setFiltroDia(''); }} style={{ background: '#334155', color: '#fff', border: 'none', padding: '9px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Limpiar Filtros</button>
             </div>
           </div>
-
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
               <thead>
@@ -687,7 +688,6 @@ export default function App() {
           </div>
         </div>
       )}
-
       {pestana === 'nueva_carga' && esAdmin && (
         <div style={{ maxWidth: '650px', margin: '0 auto', backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
           <h2 style={{ fontSize: '18px', marginBottom: '20px', color: '#f59e0b' }}>+ Registrar Nueva Carga Manual</h2>
@@ -760,7 +760,6 @@ export default function App() {
           </form>
         </div>
       )}
-
       {pestana === 'equipos' && (
         <div style={{ maxWidth: '950px', margin: '0 auto' }}>
           {esAdmin && (
@@ -777,7 +776,6 @@ export default function App() {
               </form>
             </div>
           )}
-
           <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
               <h2 style={{ fontSize: '18px', color: '#38bdf8', margin: 0 }}>Gestión de Flota y Cambio de Obra ({equipos.length})</h2>
@@ -818,7 +816,6 @@ export default function App() {
           </div>
         </div>
       )}
-
       {pestana === 'choferes' && (
         <div style={{ maxWidth: '800px', margin: '0 auto' }}>
           {esAdmin && (
@@ -831,7 +828,6 @@ export default function App() {
               </form>
             </div>
           )}
-
           <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
               <h2 style={{ fontSize: '18px', color: '#38bdf8', margin: 0 }}>Nómina de Choferes</h2>
@@ -856,7 +852,6 @@ export default function App() {
           </div>
         </div>
       )}
-
       {pestana === 'mantenimiento' && (
         <div style={{ maxWidth: '950px', margin: '0 auto' }}>
           {esAdmin && (
@@ -873,7 +868,6 @@ export default function App() {
               </form>
             </div>
           )}
-
           <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
               <h2 style={{ fontSize: '18px', color: '#38bdf8', margin: 0 }}>Control de Mantenimiento Preventivo</h2>
@@ -906,7 +900,6 @@ export default function App() {
               </table>
             </div>
           </div>
-
           <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
             <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>📜 Historial de Services Registrados</h2>
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
@@ -940,17 +933,18 @@ export default function App() {
           </div>
         </div>
       )}
-
       {pestana === 'excel' && esAdmin && (
         <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
           <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>Importar Planilla CSV</h2>
           <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Subí tu archivo CSV exportado de Excel (delimitado por punto y coma):</p>
-          
           <input type="file" accept=".csv" onChange={handleCargarArchivo} style={{ color: '#f8fafc', marginBottom: '15px', width: '100%' }} />
-          
           {excelName && (
             <div style={{ background: '#0b1329', padding: '15px', borderRadius: '8px', marginTop: '10px' }}>
-              <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>Archivo: {excelName} ({excelRows.length} filas detectadas)</p>
+              <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>Archivo: {excelName} ({Math.max(excelRows.length - 1, 0)} filas de datos)</p>
+          <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '10px' }}>
+            <input type="checkbox" checked={reemplazarTodo} onChange={e => setReemplazarTodo(e.target.checked)} /> Reemplazar todo el historial (evita duplicados si ya subiste este archivo)
+          </label>
+          {excelMsg && <p style={{ fontSize: '13px', color: '#38bdf8', margin: '0 0 10px 0' }}>{excelMsg}</p>}
               <button onClick={procesarYSubirLote} disabled={subiendoExcel} style={{ background: '#38bdf8', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>
                 {subiendoExcel ? 'Sincronizando...' : 'Sincronizar Lote con Supabase'}
               </button>
