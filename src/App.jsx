@@ -22,12 +22,10 @@ export default function App() {
   const [pestana, setPestana] = useState('dashboard');
   const [loading, setLoading] = useState(false);
 
-  // Filtros generales de historial
   const [filtroAnio, setFiltroAnio] = useState('');
   const [filtroMes, setFiltroMes] = useState('');
   const [filtroDia, setFiltroDia] = useState('');
 
-  // Filtros interactivos para el Dashboard
   const [dashAnio, setDashAnio] = useState('');
   const [dashMes, setDashMes] = useState('');
   const [dashObra, setDashObra] = useState('');
@@ -38,14 +36,9 @@ export default function App() {
     Fecha: new Date().toISOString().split('T')[0],
     "Tipo Movimiento": 'Consumo',
     Origen: 'Cisterna Camión',
-    Equipo: '',
-    Chofer: '',
-    Obra: 'RN40',
+    Equipo: '', Chofer: '', Obra: 'RN40',
     "Tipo Combustible": 'Infinia Diesel',
-    "Litros Indicados": '',
-    Orometro: '',
-    Kilometros: '',
-    Observaciones: ''
+    "Litros Indicados": '', Orometro: '', Kilometros: '', Observaciones: ''
   });
 
   const [nuevoChofer, setNuevoChofer] = useState({ nombre: '', equipo_habitual: '' });
@@ -57,9 +50,7 @@ export default function App() {
   const [subiendoExcel, setSubiendoExcel] = useState(false);
 
   useEffect(() => {
-    if (supabase) {
-      fetchDatos();
-    }
+    if (supabase) fetchDatos();
   }, []);
 
   async function fetchDatos() {
@@ -70,16 +61,9 @@ export default function App() {
       const { data: equiposData } = await supabase.from('equipos').select('*');
       const { data: mantData } = await supabase.from('mantenimiento').select('*');
 
-      if (cargasData) {
-        setTodasLasCargas(cargasData);
-        extraerEquipos(cargasData);
-      }
-      if (equiposData && equiposData.length > 0) {
-        setEquipos(equiposData);
-      }
-      if (mantData) {
-        setMantenimientos(mantData);
-      }
+      if (cargasData) { setTodasLasCargas(cargasData); extraerEquipos(cargasData); }
+      if (equiposData && equiposData.length > 0) setEquipos(equiposData);
+      if (mantData) setMantenimientos(mantData);
 
       const listaTanquesBase = (tanquesData && tanquesData.length > 0) ? tanquesData : [
         { id: 1, nombre: 'Cisterna Principal (PPL)', capacidad_l: 8500 },
@@ -100,55 +84,36 @@ export default function App() {
       const nombreTanque = (t.nombre || '').toLowerCase();
 
       cargasData.forEach(c => {
-        // Priorizar Litros Reales del Excel
+        // Usar Litros Reales, si no existe usar Litros Indicados
         const litros = parseFloat(c['Litros Reales'] || c['Litros Indicados'] || 0);
         const origenCarga = (c.Origen || '').toLowerCase();
         const destinoCarga = (c['Destino / Equipo'] || '').toLowerCase();
         const tipoMov = (c['Tipo Movimiento'] || '').toLowerCase();
 
-        // 1. COMPRAS E INGRESOS (YPF -> PPL, Dafre -> Camión)
-        if (tipoMov.includes('compra')) {
-          if (nombreTanque.includes('camión') && (destinoCarga.includes('camión') || destinoCarga.includes('camion') || origenCarga.includes('dafre'))) {
-            totalEntradas += litros;
-          }
-          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && (destinoCarga.includes('principal') || destinoCarga.includes('ppl') || origenCarga.includes('ypf'))) {
-            totalEntradas += litros;
-          }
+        // 1. COMPRAS E INGRESOS
+        if (tipoMov.includes('compra') || tipoMov.includes('ingreso')) {
+          if (nombreTanque.includes('camión') && origenCarga.includes('dafre')) totalEntradas += litros;
+          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && origenCarga.includes('ypf')) totalEntradas += litros;
         }
 
-        // 2. TRANSFERENCIAS (PPL -> Camión)
+        // 2. TRANSFERENCIAS
         if (tipoMov.includes('transferencia')) {
-          if (nombreTanque.includes('principal') || nombreTanque.includes('ppl')) {
-            totalSalidas += litros;
-          }
-          if (nombreTanque.includes('camión') || nombreTanque.includes('camion')) {
-            totalEntradas += litros;
-          }
+          if (nombreTanque.includes('principal') || nombreTanque.includes('ppl')) totalSalidas += litros;
+          if (nombreTanque.includes('camión') || nombreTanque.includes('camion')) totalEntradas += litros;
         }
 
-        // 3. CONSUMOS A VEHÍCULOS
+        // 3. CONSUMOS
         if (tipoMov.includes('consumo')) {
-          if (nombreTanque.includes('camión') && (origenCarga.includes('camión') || origenCarga.includes('camion'))) {
-            totalSalidas += litros;
-          }
-          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && (origenCarga.includes('principal') || origenCarga.includes('ppl'))) {
-            totalSalidas += litros;
-          }
+          if (nombreTanque.includes('camión') && (origenCarga.includes('camión') || origenCarga.includes('camion'))) totalSalidas += litros;
+          if ((nombreTanque.includes('principal') || nombreTanque.includes('ppl')) && (origenCarga.includes('principal') || origenCarga.includes('ppl'))) totalSalidas += litros;
         }
       });
 
-      // Cálculo exacto que permite saldos negativos en caso de faltantes
+      // Stock puede ser negativo para detectar errores operativos
       const stockReal = totalEntradas - totalSalidas;
 
-      return { 
-        ...t, 
-        stock_real: stockReal, 
-        capacidad: capacidad, 
-        totalEntradas, 
-        totalSalidas 
-      };
+      return { ...t, stock_real: stockReal, capacidad: capacidad, totalEntradas, totalSalidas };
     });
-
     setTanques(tanquesCalculados);
   }
 
@@ -167,7 +132,6 @@ export default function App() {
         };
       }
     });
-
     setEquipos(prev => {
       const codigosExistentes = new Set(prev.map(p => p.codigo));
       const nuevos = Object.values(equiposMap).filter(e => !codigosExistentes.has(e.codigo));
@@ -178,10 +142,8 @@ export default function App() {
   const handleSeleccionEquipoForm = (codigoEq) => {
     const eqEncontrado = equipos.find(e => e.codigo === codigoEq);
     const choferAsignado = choferes.find(ch => ch.equipo_habitual === codigoEq);
-
     setFormCarga(prev => ({
-      ...prev,
-      Equipo: codigoEq,
+      ...prev, Equipo: codigoEq,
       Obra: eqEncontrado ? eqEncontrado.obra_predeterminada || prev.Obra : prev.Obra,
       Chofer: choferAsignado ? choferAsignado.nombre : prev.Chofer,
       "Tipo Combustible": eqEncontrado ? eqEncontrado.tipo_combustible || prev["Tipo Combustible"] : prev["Tipo Combustible"]
@@ -196,30 +158,19 @@ export default function App() {
       if (error) throw error;
       alert('¡Carga registrada con éxito!');
       setFormCarga({
-        Fecha: new Date().toISOString().split('T')[0],
-        "Tipo Movimiento": 'Consumo',
-        Origen: 'Cisterna Camión',
-        Equipo: '',
-        Chofer: '',
-        Obra: 'RN40',
-        "Tipo Combustible": 'Infinia Diesel',
-        "Litros Indicados": '',
-        Orometro: '',
-        Kilometros: '',
-        Observaciones: ''
+        Fecha: new Date().toISOString().split('T')[0], "Tipo Movimiento": 'Consumo', Origen: 'Cisterna Camión',
+        Equipo: '', Chofer: '', Obra: 'RN40', "Tipo Combustible": 'Infinia Diesel',
+        "Litros Indicados": '', Orometro: '', Kilometros: '', Observaciones: ''
       });
       setPestana('dashboard');
       fetchDatos();
-    } catch (err) {
-      alert('Error al guardar: ' + err.message);
-    }
+    } catch (err) { alert('Error al guardar: ' + err.message); }
   };
 
   const handleGuardarChofer = (e) => {
     e.preventDefault();
     if (!nuevoChofer.nombre) return;
-    const ch = { id: Date.now(), nombre: nuevoChofer.nombre, equipo_habitual: nuevoChofer.equipo_habitual };
-    setChoferes([...choferes, ch]);
+    setChoferes([...choferes, { id: Date.now(), ...nuevoChofer }]);
     setNuevoChofer({ nombre: '', equipo_habitual: '' });
     alert('¡Chofer agregado correctamente!');
   };
@@ -228,9 +179,7 @@ export default function App() {
     e.preventDefault();
     if (!nuevoEquipo.codigo) return;
     setEquipos([...equipos, nuevoEquipo]);
-    try {
-      await supabase.from('equipos').insert([nuevoEquipo]);
-    } catch (err) { console.error(err); }
+    try { await supabase.from('equipos').insert([nuevoEquipo]); } catch (err) {}
     setNuevoEquipo({ codigo: '', descripcion: '', tipo: 'Máquina', obra_predeterminada: 'RN40', tipo_combustible: 'Infinia Diesel' });
     alert('¡Equipo creado exitosamente!');
   };
@@ -238,18 +187,9 @@ export default function App() {
   const handleRegistrarService = async (e) => {
     e.preventDefault();
     if (!formService.codigo_equipo) return;
-    const nuevoReg = {
-      id: Date.now(),
-      codigo_equipo: formService.codigo_equipo,
-      fecha: new Date().toISOString().split('T')[0],
-      ultimo_hm_km: parseFloat(formService.hm_km_actual) || 0,
-      tipo_service: formService.tipo_service,
-      observaciones: formService.observaciones
-    };
+    const nuevoReg = { id: Date.now(), codigo_equipo: formService.codigo_equipo, fecha: new Date().toISOString().split('T')[0], ultimo_hm_km: parseFloat(formService.hm_km_actual) || 0, tipo_service: formService.tipo_service, observaciones: formService.observaciones };
     setMantenimientos([nuevoReg, ...mantenimientos]);
-    try {
-      await supabase.from('mantenimiento').insert([nuevoReg]);
-    } catch (err) { console.error(err); }
+    try { await supabase.from('mantenimiento').insert([nuevoReg]); } catch (err) {}
     setFormService({ codigo_equipo: '', hm_km_actual: '', tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
     alert('¡Registro de Service guardado correctamente!');
   };
@@ -258,7 +198,6 @@ export default function App() {
     const file = e.target.files[0];
     if (!file) return;
     setExcelName(file.name);
-
     const reader = new FileReader();
     reader.onload = (evt) => {
       const text = evt.target.result;
@@ -297,4 +236,5 @@ export default function App() {
       })).filter(item => item["Litros Indicados"] > 0);
 
       const { error } = await supabase.from('cargas_diarias').insert(filasAInsertar);
-      if
+      if (error) throw error;
+      alert(`¡
