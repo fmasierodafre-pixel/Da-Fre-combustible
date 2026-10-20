@@ -42,13 +42,17 @@ function aNum(v) {
 function numTxt(v) { const n = aNum(v); return n === null ? '' : String(n); }
 
 const PERMISOS = {
-  admin: ['dashboard', 'historial', 'nueva_carga', 'equipos', 'choferes', 'mantenimiento', 'obras', 'excel'],
+  admin: ['dashboard', 'historial', 'nueva_carga', 'equipos', 'choferes', 'mantenimiento', 'obras', 'flota', 'excel'],
   gerencia: ['dashboard'],
-  logistica: ['dashboard', 'equipos', 'obras'],
-  mantenimiento: ['mantenimiento'],
+  logistica: ['dashboard', 'equipos', 'obras', 'flota'],
+  mantenimiento: ['mantenimiento', 'flota'],
   playero: ['nueva_carga'],
   administrativo: ['historial', 'excel']
 };
+const ESTADOS_FLOTA = ['En obra', 'Standby', 'Fuera de obra', 'En taller'];
+const ESTADO_COLOR = { 'En obra': '#4ade80', 'Standby': '#facc15', 'Fuera de obra': '#b4bcc0', 'En taller': '#f87171' };
+const hoyISO = () => new Date().toISOString().split('T')[0];
+const diasDesde = (f) => f ? Math.max(0, Math.floor((new Date() - new Date(f + 'T00:00:00')) / 86400000)) : 0;
 const ETIQUETA_ROL = { admin: '👑 Administrador', gerencia: '📈 Gerencia', logistica: '⛽ Logística', mantenimiento: '🛠️ Mantenimiento', playero: '📝 Carga de combustible', administrativo: '📊 Administrativo' };
 
 // XLSX-START: genera un .xlsx real sin librerías externas
@@ -115,6 +119,11 @@ export default function App() {
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const [loginMsg, setLoginMsg] = useState('');
   const [obrasLista, setObrasLista] = useState([]);
+  const [asignaciones, setAsignaciones] = useState([]);
+  const [formAsig, setFormAsig] = useState({ equipo: '', estado: 'En obra', obra: '', chofer: '', fecha: hoyISO(), observaciones: '' });
+  const [editAsig, setEditAsig] = useState(null);
+  const [filtroEstadoFlota, setFiltroEstadoFlota] = useState('Todos');
+  const [filtroAsigEquipo, setFiltroAsigEquipo] = useState('');
   const [nombreObraNueva, setNombreObraNueva] = useState('');
   const esAdmin = rol === 'admin';
   const puede = (t) => (PERMISOS[rol] || []).includes(t);
@@ -198,6 +207,8 @@ export default function App() {
       const { data: choferesData } = await supabase.from('choferes').select('*');
       const { data: obrasData } = await supabase.from('obras').select('*').order('nombre');
       if (obrasData) setObrasLista(obrasData);
+      const { data: asigData } = await supabase.from('asignaciones').select('*').order('desde', { ascending: false }).order('id', { ascending: false });
+      if (asigData) setAsignaciones(asigData);
       if (choferesData && choferesData.length > 0) setChoferes(choferesData);
       if (cargasData) {
         setTodasLasCargas(cargasData);
@@ -392,6 +403,45 @@ export default function App() {
       if (error) throw error;
     } catch (err) { alert('No se pudo guardar el intervalo (¿ejecutaste actualizacion_mejoras.sql?): ' + err.message); }
   };
+  const cerrarAbierta = async (cod, fecha) => {
+    const ab = abiertaDe(cod);
+    if (ab) { const { error } = await supabase.from('asignaciones').update({ hasta: fecha }).eq('id', ab.id); if (error) throw error; }
+  };
+  const handleRegistrarAsignacion = async (e) => {
+    e.preventDefault();
+    const f = formAsig;
+    if (!f.equipo) { alert('Elegí un equipo.'); return; }
+    if (f.estado === 'En obra' && !f.obra) { alert('Elegí la obra.'); return; }
+    try {
+      await cerrarAbierta(f.equipo, f.fecha);
+      const { error } = await supabase.from('asignaciones').insert([{ equipo: f.equipo, estado: f.estado, obra: f.estado === 'En obra' ? f.obra : '', chofer: f.chofer, desde: f.fecha, observaciones: f.observaciones }]);
+      if (error) throw error;
+      if (f.estado === 'En obra' && (rol === 'admin' || rol === 'logistica')) await supabase.from('equipos').update({ obra_predeterminada: f.obra }).eq('codigo', f.equipo);
+      setFormAsig({ ...f, equipo: '', chofer: '', observaciones: '' });
+      await fetchDatos();
+    } catch (err) { alert('Error al registrar (¿ejecutaste etapa3_flota.sql?): ' + err.message); }
+  };
+  const handleDarSalidaTaller = async (cod) => {
+    const eq = equipos.find(x => x.codigo === cod);
+    try {
+      await cerrarAbierta(cod, hoyISO());
+      const { error } = await supabase.from('asignaciones').insert([{ equipo: cod, estado: 'En obra', obra: (eq && eq.obra_predeterminada) || '', chofer: '', desde: hoyISO(), observaciones: 'Salida de taller' }]);
+      if (error) throw error;
+      await fetchDatos();
+    } catch (err) { alert('Error: ' + err.message); }
+  };
+  const handleGuardarAsigEdit = async () => {
+    const { id, ...resto } = editAsig;
+    const { error } = await supabase.from('asignaciones').update({ estado: resto.estado, obra: resto.obra || '', chofer: resto.chofer || '', desde: resto.desde, hasta: resto.hasta || null, observaciones: resto.observaciones || '' }).eq('id', id);
+    if (error) { alert('Error: ' + error.message); return; }
+    setEditAsig(null); await fetchDatos();
+  };
+  const handleEliminarAsig = async () => {
+    if (!window.confirm('¿Eliminar este registro del historial?')) return;
+    const { error } = await supabase.from('asignaciones').delete().eq('id', editAsig.id);
+    if (error) { alert('Error: ' + error.message); return; }
+    setEditAsig(null); await fetchDatos();
+  };
   const handleAgregarObra = async () => {
     const n = nombreObraNueva.trim();
     if (!n) return;
@@ -553,6 +603,8 @@ export default function App() {
   const maxGen = generadoresOrdenado.length > 0 ? generadoresOrdenado[0][1] : 1;
   const rendimientoOrdenado = Object.entries(rendimientoPorVehiculoDash).sort((a, b) => b[1] - a[1]);
   const maxRendimiento = rendimientoOrdenado.length > 0 ? rendimientoOrdenado[0][1] : 1;
+  const abiertaDe = (cod) => asignaciones.find(a => a.equipo === cod && !a.hasta);
+  const estadoDe = (cod) => (abiertaDe(cod) || {}).estado || 'En obra';
   const estadoMantenimientoEquipos = equipos.map(eq => {
     const cargasEq = todasLasCargas.filter(c => (c.Equipo === eq.codigo || c['Destino / Equipo'] === eq.codigo));
     let ultimoLectura = 0, primerLectura = Infinity;
@@ -575,6 +627,8 @@ export default function App() {
     if (pct > 1) { estado = `VENCIDO (+${Math.abs(horasRestantes).toFixed(0)} hs/km)`; colorEstado = '#ef4444'; }
     else if (pct > umbrales[1]) { estado = `PRÓXIMO (${horasRestantes.toFixed(0)} restantes)`; colorEstado = '#f97316'; }
     else if (pct > umbrales[0]) { estado = `ATENCIÓN (${horasRestantes.toFixed(0)} restantes)`; colorEstado = '#facc15'; }
+    const estFlota = estadoDe(eq.codigo);
+    if (estFlota !== 'En obra') { estado = estFlota.toUpperCase(); colorEstado = ESTADO_COLOR[estFlota]; }
     return { ...eq, ultimoLectura, intervaloService, ultimoServiceLectura, horasDesdeUltimoService, pct, horasRestantes: Math.max(0, horasRestantes), estado, colorEstado };
   });
   if (!authListo) return <div style={{ minHeight: '100vh', background: '#2b3133', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>Cargando...</div>;
@@ -620,6 +674,7 @@ export default function App() {
         {puede('equipos') && <button onClick={() => setPestana('equipos')} style={{ background: pestana === 'equipos' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'equipos' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Equipos y Obras</button>}
         {puede('choferes') && <button onClick={() => setPestana('choferes')} style={{ background: pestana === 'choferes' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'choferes' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Choferes</button>}
         {puede('mantenimiento') && <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'mantenimiento' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Mantenimiento</button>}
+        {puede('flota') && <button onClick={() => setPestana('flota')} style={{ background: pestana === 'flota' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>🚛 Flota y Estados</button>}
         {puede('obras') && <button onClick={() => setPestana('obras')} style={{ background: pestana === 'obras' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>🏗️ Obras</button>}
         {puede('excel') && <button onClick={() => setPestana('excel')} style={{ background: pestana === 'excel' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'excel' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Excel / CSV</button>}
       </div>
@@ -1013,6 +1068,24 @@ export default function App() {
       )}
       {pestana === 'mantenimiento' && (
         <div style={{ maxWidth: '950px', margin: '0 auto' }}>
+          {equipos.some(x => estadoDe(x.codigo) === 'En taller') && (
+            <div style={{ backgroundColor: '#373f42', padding: '20px', borderRadius: '12px', border: '1px solid #f87171', marginBottom: '25px' }}>
+              <h2 style={{ fontSize: '18px', color: '#f87171', margin: '0 0 12px' }}>🔧 Equipos en taller</h2>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left' }}>
+                <thead><tr style={{ color: '#b4bcc0' }}><th style={{ padding: '8px' }}>Equipo</th><th style={{ padding: '8px' }}>Ingreso</th><th style={{ padding: '8px' }}>Días</th><th style={{ padding: '8px' }}>Falla / observaciones</th><th style={{ padding: '8px' }}></th></tr></thead>
+                <tbody>
+                  {equipos.filter(x => estadoDe(x.codigo) === 'En taller').map(x => { const ab = abiertaDe(x.codigo); return (
+                    <tr key={x.codigo} style={{ borderTop: '1px solid #454e51' }}>
+                      <td style={{ padding: '8px', fontWeight: 'bold', color: '#7ea4e8' }}>{x.codigo} <span style={{ color: '#b4bcc0', fontWeight: 'normal' }}>{x.descripcion}</span></td>
+                      <td style={{ padding: '8px' }}>{ab.desde}</td>
+                      <td style={{ padding: '8px' }}>{diasDesde(ab.desde)}</td>
+                      <td style={{ padding: '8px' }}>{ab.observaciones || '-'}</td>
+                      <td style={{ padding: '8px' }}>{puede('flota') && <button onClick={() => handleDarSalidaTaller(x.codigo)} style={{ background: '#4ade80', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Dar salida / Habilitar</button>}</td>
+                    </tr>); })}
+                </tbody>
+              </table>
+            </div>
+          )}
           {puedeServices && (
             <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
               <h2 style={{ fontSize: '18px', color: '#7ea4e8', marginBottom: '15px' }}>🛠️ Registrar Service Realizado</h2>
@@ -1096,6 +1169,94 @@ export default function App() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+      {pestana === 'flota' && puede('flota') && (
+        <div style={{ display: 'grid', gap: '25px' }}>
+          <datalist id="fl-choferes">{choferes.map((c, i) => <option key={i} value={c.nombre} />)}</datalist>
+          <datalist id="fl-obras">{obrasDisponibles.map((o, i) => <option key={i} value={o} />)}</datalist>
+          <form onSubmit={handleRegistrarAsignacion} style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #3f62a8' }}>
+            <h2 style={{ fontSize: '18px', color: '#7ea4e8', margin: '0 0 15px' }}>🔄 Registrar cambio de estado, obra o chofer</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
+              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Equipo<select value={formAsig.equipo} onChange={e => setFormAsig({ ...formAsig, equipo: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }}><option value="">Elegir...</option>{equipos.map(x => <option key={x.codigo} value={x.codigo}>{x.codigo} - {x.descripcion}</option>)}</select></label>
+              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Estado<select value={formAsig.estado} onChange={e => setFormAsig({ ...formAsig, estado: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }}>{ESTADOS_FLOTA.map(x => <option key={x} value={x}>{x}</option>)}</select></label>
+              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Obra<select disabled={formAsig.estado !== 'En obra'} value={formAsig.obra} onChange={e => setFormAsig({ ...formAsig, obra: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }}><option value="">Elegir...</option>{obrasSeleccionables.map(o => <option key={o} value={o}>{o}</option>)}</select></label>
+              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Chofer<input list="fl-choferes" value={formAsig.chofer} onChange={e => setFormAsig({ ...formAsig, chofer: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Fecha<input type="date" value={formAsig.fecha} onChange={e => setFormAsig({ ...formAsig, fecha: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>{formAsig.estado === 'En taller' ? 'Falla detectada' : 'Observaciones'}<input value={formAsig.observaciones} onChange={e => setFormAsig({ ...formAsig, observaciones: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+            </div>
+            <button type="submit" style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', marginTop: '15px' }}>Registrar cambio</button>
+          </form>
+          <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #3f62a8' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '15px' }}>
+              <h2 style={{ fontSize: '18px', color: '#7ea4e8', margin: 0 }}>Estado actual de la flota</h2>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <select value={filtroEstadoFlota} onChange={e => setFiltroEstadoFlota(e.target.value)} style={{ padding: '6px', background: '#2b3133', color: '#fff', border: '1px solid #3f62a8', borderRadius: '6px' }}>{['Todos', ...ESTADOS_FLOTA].map(x => <option key={x} value={x}>{x}</option>)}</select>
+                <button onClick={() => exportarACSV(equipos.map(x => { const ab = abiertaDe(x.codigo) || {}; return { Equipo: x.codigo, Descripcion: x.descripcion, Estado: estadoDe(x.codigo), Obra: ab.obra || x.obra_predeterminada || '', Chofer: ab.chofer || '', Desde: ab.desde || '', Dias: ab.desde ? diasDesde(ab.desde) : '' }; }), 'estado_flota')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>📥 Excel</button>
+              </div>
+            </div>
+            <div style={{ overflowX: 'auto', maxHeight: '380px', overflowY: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left' }}>
+                <thead><tr style={{ color: '#b4bcc0', background: '#2b3133' }}><th style={{ padding: '8px' }}>Equipo</th><th style={{ padding: '8px' }}>Estado</th><th style={{ padding: '8px' }}>Obra</th><th style={{ padding: '8px' }}>Chofer</th><th style={{ padding: '8px' }}>Desde</th></tr></thead>
+                <tbody>
+                  {equipos.filter(x => filtroEstadoFlota === 'Todos' || estadoDe(x.codigo) === filtroEstadoFlota).map(x => { const ab = abiertaDe(x.codigo) || {}; const est = estadoDe(x.codigo); return (
+                    <tr key={x.codigo} style={{ borderTop: '1px solid #454e51' }}>
+                      <td style={{ padding: '8px', fontWeight: 'bold', color: '#7ea4e8' }}>{x.codigo} <span style={{ color: '#b4bcc0', fontWeight: 'normal' }}>{x.descripcion}</span></td>
+                      <td style={{ padding: '8px', color: ESTADO_COLOR[est], fontWeight: 'bold' }}>● {est}</td>
+                      <td style={{ padding: '8px' }}>{ab.obra || x.obra_predeterminada || '-'}</td>
+                      <td style={{ padding: '8px' }}>{ab.chofer || '-'}</td>
+                      <td style={{ padding: '8px' }}>{ab.desde ? `${ab.desde} (${diasDesde(ab.desde)} d)` : '-'}</td>
+                    </tr>); })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #3f62a8' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '15px' }}>
+              <h2 style={{ fontSize: '18px', color: '#7ea4e8', margin: 0 }}>Historial de obras, choferes y estados</h2>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <select value={filtroAsigEquipo} onChange={e => setFiltroAsigEquipo(e.target.value)} style={{ padding: '6px', background: '#2b3133', color: '#fff', border: '1px solid #3f62a8', borderRadius: '6px' }}><option value="">Todos los equipos</option>{equipos.map(x => <option key={x.codigo} value={x.codigo}>{x.codigo}</option>)}</select>
+                <button onClick={() => exportarACSV(asignaciones.filter(a => !filtroAsigEquipo || a.equipo === filtroAsigEquipo).map(a => ({ Equipo: a.equipo, Estado: a.estado, Obra: a.obra, Chofer: a.chofer, Desde: a.desde, Hasta: a.hasta || 'Vigente', Observaciones: a.observaciones })), 'historial_asignaciones')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>📥 Excel</button>
+              </div>
+            </div>
+            {editAsig && (
+              <div style={{ background: '#2b3133', border: '1px solid #7ea4e8', borderRadius: '10px', padding: '15px', marginBottom: '15px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Estado<select value={editAsig.estado} onChange={e => setEditAsig({ ...editAsig, estado: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }}>{ESTADOS_FLOTA.map(x => <option key={x} value={x}>{x}</option>)}</select></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Obra<input list="fl-obras" value={editAsig.obra || ''} onChange={e => setEditAsig({ ...editAsig, obra: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Chofer<input list="fl-choferes" value={editAsig.chofer || ''} onChange={e => setEditAsig({ ...editAsig, chofer: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Desde<input type="date" value={editAsig.desde || ''} onChange={e => setEditAsig({ ...editAsig, desde: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Hasta (vacío = vigente)<input type="date" value={editAsig.hasta || ''} onChange={e => setEditAsig({ ...editAsig, hasta: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Observaciones<input value={editAsig.observaciones || ''} onChange={e => setEditAsig({ ...editAsig, observaciones: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                </div>
+                <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+                  <button onClick={handleGuardarAsigEdit} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar</button>
+                  <button onClick={() => setEditAsig(null)} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer' }}>Cancelar</button>
+                  <button onClick={handleEliminarAsig} style={{ background: '#ef4444', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer', marginLeft: 'auto' }}>Eliminar</button>
+                </div>
+              </div>
+            )}
+            <div style={{ overflowX: 'auto', maxHeight: '420px', overflowY: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left' }}>
+                <thead><tr style={{ color: '#b4bcc0', background: '#2b3133' }}><th style={{ padding: '8px' }}>Equipo</th><th style={{ padding: '8px' }}>Estado</th><th style={{ padding: '8px' }}>Obra</th><th style={{ padding: '8px' }}>Chofer</th><th style={{ padding: '8px' }}>Desde</th><th style={{ padding: '8px' }}>Hasta</th><th style={{ padding: '8px' }}>Obs.</th>{esAdmin && <th style={{ padding: '8px' }}></th>}</tr></thead>
+                <tbody>
+                  {asignaciones.filter(a => !filtroAsigEquipo || a.equipo === filtroAsigEquipo).map(a => (
+                    <tr key={a.id} style={{ borderTop: '1px solid #454e51' }}>
+                      <td style={{ padding: '8px', fontWeight: 'bold', color: '#7ea4e8' }}>{a.equipo}</td>
+                      <td style={{ padding: '8px', color: ESTADO_COLOR[a.estado] }}>{a.estado}</td>
+                      <td style={{ padding: '8px' }}>{a.obra || '-'}</td>
+                      <td style={{ padding: '8px' }}>{a.chofer || '-'}</td>
+                      <td style={{ padding: '8px' }}>{a.desde}</td>
+                      <td style={{ padding: '8px' }}>{a.hasta || 'Vigente'}</td>
+                      <td style={{ padding: '8px', maxWidth: '200px' }}>{a.observaciones || ''}</td>
+                      {esAdmin && <td style={{ padding: '8px' }}><button onClick={() => setEditAsig({ ...a })} style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px' }}>✏️</button></td>}
+                    </tr>
+                  ))}
+                  {asignaciones.length === 0 && <tr><td colSpan="8" style={{ padding: '25px', textAlign: 'center', color: '#b4bcc0' }}>Todavía no hay registros. Los equipos figuran "En obra" hasta que registres un cambio.</td></tr>}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
