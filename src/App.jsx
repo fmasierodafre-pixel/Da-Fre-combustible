@@ -85,6 +85,7 @@ export default function App() {
   const [excelName, setExcelName] = useState('');
   const [subiendoExcel, setSubiendoExcel] = useState(false);
   const [excelMsg, setExcelMsg] = useState('');
+  const [edit, setEdit] = useState(null);
   const [reemplazarTodo, setReemplazarTodo] = useState(true);
   useEffect(() => {
     if (supabase) {
@@ -188,7 +189,9 @@ export default function App() {
     try {
       const tipo = formCarga["Tipo Movimiento"];
       const indicados = aNum(formCarga["Litros Indicados"]);
-      if (!indicados || indicados <= 0) throw new Error('Ingresá los litros indicados por el surtidor.');
+      const esAjuste = tipo === 'Ajuste';
+      if (!indicados || (!esAjuste && indicados <= 0)) throw new Error(esAjuste ? 'Ingresá los litros del ajuste (positivo si sobra, negativo si falta).' : 'Ingresá los litros indicados por el surtidor.');
+      if (esAjuste && !tanques.some(t => t.nombre === formCarga.Origen)) throw new Error('Para un ajuste elegí una cisterna en "Origen / Cisterna".');
       if (tipo === 'Consumo' && !formCarga.Equipo) throw new Error('Elegí el equipo que recibe el combustible.');
       const destino = tipo === 'Consumo' ? formCarga.Equipo
         : (tipo === 'Transferencia' ? 'Cisterna Camión'
@@ -206,7 +209,8 @@ export default function App() {
         Kilometros: numTxt(formCarga.Kilometros),
         ...(tipo !== 'Consumo' ? { Chofer: '', Obra: '' } : {})
       };
-      const { error } = await supabase.from('cargas_diarias').insert([registro]);
+      const registroAjuste = esAjuste ? { ...formCarga, "Tipo Movimiento": 'Ajuste de Stock', Origen: indicados < 0 ? formCarga.Origen : '', "Destino / Equipo": indicados > 0 ? formCarga.Origen : '', Equipo: '', Chofer: '', Obra: '', "Tipo Combustible": '', "Litros Indicados": indicados, "Factor Calibracion": 1, "Litros Reales": Math.abs(indicados), Orometro: '', Kilometros: '' } : null;
+      const { error } = await supabase.from('cargas_diarias').insert([esAjuste ? registroAjuste : registro]);
       if (error) throw error;
       alert('¡Carga registrada con éxito!');
       setFormCarga({
@@ -271,6 +275,36 @@ export default function App() {
     } catch (err) { console.error(err); }
     setFormService({ codigo_equipo: '', hm_km_actual: '', tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
     alert('¡Registro de Service guardado correctamente!');
+  };
+  const handleGuardarEdicion = async () => {
+    try {
+      const reales = aNum(edit['Litros Reales']);
+      if (reales === null || reales <= 0) throw new Error('Los litros deben ser un número mayor a 0.');
+      const f = parseFloat(edit['Factor Calibracion']) || 1;
+      const cambios = { Fecha: edit.Fecha, Equipo: edit.Equipo || '', Chofer: edit.Chofer || '', Obra: edit.Obra || '', Observaciones: edit.Observaciones || '', 'Litros Reales': reales };
+      if (edit['Tipo Movimiento'] !== 'Ajuste de Stock') cambios['Litros Indicados'] = Math.round(reales / f * 10) / 10;
+      if (edit['Tipo Movimiento'] === 'Consumo') cambios['Destino / Equipo'] = edit.Equipo || '';
+      const { error } = await supabase.from('cargas_diarias').update(cambios).eq('id', edit.id);
+      if (error) throw error;
+      setEdit(null);
+      await fetchDatos();
+    } catch (err) { alert('Error al guardar: ' + err.message); }
+  };
+  const handleEliminarRegistro = async () => {
+    if (!window.confirm('¿Eliminar este registro definitivamente? Cambia el stock y los consumos.')) return;
+    const { error } = await supabase.from('cargas_diarias').delete().eq('id', edit.id);
+    if (error) { alert('Error al eliminar: ' + error.message); return; }
+    setEdit(null);
+    await fetchDatos();
+  };
+  const handleCambiarIntervalo = async (codigo, valor) => {
+    const n = aNum(valor);
+    if (!n || n <= 0) return;
+    setEquipos(prev => prev.map(e => e.codigo === codigo ? { ...e, intervalo_service: n } : e));
+    try {
+      const { error } = await supabase.from('equipos').update({ intervalo_service: n }).eq('codigo', codigo);
+      if (error) throw error;
+    } catch (err) { alert('No se pudo guardar el intervalo (¿ejecutaste actualizacion_mejoras.sql?): ' + err.message); }
   };
   const handleCargarArchivo = async (e) => {
     const file = e.target.files[0];
@@ -436,71 +470,69 @@ export default function App() {
       if (val > 0 && val < primerLectura) primerLectura = val;
     });
     if (primerLectura === Infinity) primerLectura = ultimoLectura;
-    const esMaquina = eq.tipo === 'Máquina' || eq.codigo.startsWith('M') || eq.codigo.startsWith('CAT') || eq.codigo.startsWith('P') || eq.codigo.startsWith('GEN');
-    const intervaloService = 400; // igual que 07_Mantenimiento del Excel (primer registro + 400)
+    const esCamion = /cami|batea/i.test(eq.tipo || '');
+    const intervaloService = parseFloat(eq.intervalo_service) || (esCamion ? 400 : 250);
+    // Umbrales: camiones verde hasta 350/400, amarillo hasta 380, naranja hasta 400. Máquinas verde hasta 150/250, amarillo hasta 200, naranja hasta 250. Rojo = vencido.
+    const umbrales = esCamion ? [0.875, 0.95] : [0.6, 0.8];
     const serviceRegistrado = mantenimientos.filter(m => m.codigo_equipo === eq.codigo).sort((a, b) => (parseFloat(b.ultimo_hm_km) || 0) - (parseFloat(a.ultimo_hm_km) || 0))[0];
     const ultimoServiceLectura = serviceRegistrado ? parseFloat(serviceRegistrado.ultimo_hm_km || 0) : primerLectura;
-    const horasDesdeUltimoService = ultimoLectura - ultimoServiceLectura;
+    const horasDesdeUltimoService = Math.max(ultimoLectura - ultimoServiceLectura, 0);
     const horasRestantes = intervaloService - horasDesdeUltimoService;
-    let estado = 'OK';
-    let colorEstado = '#4ade80';
-    if (horasRestantes <= 0) {
-      estado = 'VENCIDO - REALIZAR SERVICE';
-      colorEstado = '#ef4444';
-    } else if (horasRestantes <= 50) {
-      estado = `ALERTA (${horasRestantes.toFixed(0)} hs restantes)`;
-      colorEstado = '#f59e0b';
-    }
-    return { ...eq, ultimoLectura, intervaloService, ultimoServiceLectura, horasRestantes: Math.max(0, horasRestantes), estado, colorEstado };
+    const pct = horasDesdeUltimoService / intervaloService;
+    let estado = 'OK', colorEstado = '#4ade80';
+    if (pct > 1) { estado = `VENCIDO (+${Math.abs(horasRestantes).toFixed(0)} hs/km)`; colorEstado = '#ef4444'; }
+    else if (pct > umbrales[1]) { estado = `PRÓXIMO (${horasRestantes.toFixed(0)} restantes)`; colorEstado = '#f97316'; }
+    else if (pct > umbrales[0]) { estado = `ATENCIÓN (${horasRestantes.toFixed(0)} restantes)`; colorEstado = '#facc15'; }
+    return { ...eq, ultimoLectura, intervaloService, ultimoServiceLectura, horasDesdeUltimoService, pct, horasRestantes: Math.max(0, horasRestantes), estado, colorEstado };
   });
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#0b1329', color: '#f8fafc', padding: '20px', fontFamily: 'sans-serif' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '15px', backgroundColor: '#131b31', padding: '15px 25px', borderRadius: '10px', borderBottom: '3px solid #1e3a8a' }}>
+    <div style={{ minHeight: '100vh', backgroundColor: '#2b3133', color: '#f8fafc', padding: '20px', fontFamily: 'sans-serif' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '15px', backgroundColor: '#ffffff', padding: '15px 25px', borderRadius: '10px', borderBottom: '3px solid #1e3a8a' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-          <div style={{ backgroundColor: '#1e3a8a', padding: '10px 15px', borderRadius: '8px', fontWeight: 'bold', fontSize: '20px', color: '#ffffff', letterSpacing: '1px' }}>
+          <div style={{ backgroundColor: '#3f62a8', padding: '10px 15px', borderRadius: '8px', fontWeight: 'bold', fontSize: '20px', color: '#ffffff', letterSpacing: '1px' }}>
             DA FRÉ
           </div>
           <div>
-            <h1 style={{ fontSize: '20px', fontWeight: 'bold', color: '#f59e0b', margin: 0 }}>Gestión de Vehículos</h1>
-            <p style={{ color: '#94a3b8', fontSize: '12px', margin: '2px 0 0 0' }}>Obras Civiles S.A. — Control de Combustible y Flota</p>
+            <h1 style={{ fontSize: '20px', fontWeight: 'bold', color: '#373f42', margin: 0 }}>Gestión de Vehículos</h1>
+            <p style={{ color: '#5f686c', fontSize: '12px', margin: '2px 0 0 0' }}>Obras Civiles S.A. — Control de Combustible y Flota</p>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <span style={{ fontSize: '12px', color: '#38bdf8', background: '#0f172a', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e3a8a' }}>
+          <span style={{ fontSize: '12px', color: '#4da3e0', background: '#232829', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e3a8a' }}>
             Perfil: {esAdmin ? '👑 Administrador' : '👤 Operador'}
           </span>
-          <button onClick={() => setEsAdmin(!esAdmin)} style={{ background: '#334155', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}>
+          <button onClick={() => setEsAdmin(!esAdmin)} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}>
             Cambiar Rol
           </button>
         </div>
       </header>
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '25px', backgroundColor: '#131b31', padding: '10px', borderRadius: '8px' }}>
-        <button onClick={() => setPestana('dashboard')} style={{ background: pestana === 'dashboard' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'dashboard' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Dashboard</button>
-        <button onClick={() => setPestana('historial')} style={{ background: pestana === 'historial' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'historial' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Historial y Filtros</button>
-        {esAdmin && <button onClick={() => setPestana('nueva_carga')} style={{ background: pestana === 'nueva_carga' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'nueva_carga' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>+ Nueva Carga</button>}
-        <button onClick={() => setPestana('equipos')} style={{ background: pestana === 'equipos' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'equipos' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Equipos y Obras</button>
-        <button onClick={() => setPestana('choferes')} style={{ background: pestana === 'choferes' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'choferes' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Choferes</button>
-        <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'mantenimiento' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Mantenimiento</button>
-        {esAdmin && <button onClick={() => setPestana('excel')} style={{ background: pestana === 'excel' ? '#1e3a8a' : '#1e293b', color: '#f8fafc', border: pestana === 'excel' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Excel / CSV</button>}
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '25px', backgroundColor: '#373f42', padding: '10px', borderRadius: '8px' }}>
+        <button onClick={() => setPestana('dashboard')} style={{ background: pestana === 'dashboard' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'dashboard' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Dashboard</button>
+        <button onClick={() => setPestana('historial')} style={{ background: pestana === 'historial' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'historial' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Historial y Filtros</button>
+        {esAdmin && <button onClick={() => setPestana('nueva_carga')} style={{ background: pestana === 'nueva_carga' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'nueva_carga' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>+ Nueva Carga</button>}
+        <button onClick={() => setPestana('equipos')} style={{ background: pestana === 'equipos' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'equipos' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Equipos y Obras</button>
+        <button onClick={() => setPestana('choferes')} style={{ background: pestana === 'choferes' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'choferes' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Choferes</button>
+        <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'mantenimiento' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Mantenimiento</button>
+        {esAdmin && <button onClick={() => setPestana('excel')} style={{ background: pestana === 'excel' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'excel' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Excel / CSV</button>}
       </div>
       {pestana === 'dashboard' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
             <h2 style={{ fontSize: '16px', color: '#cbd5e1', margin: 0 }}>Stock Actual en Cisternas (Litros Reales Oficiales al 16/10)</h2>
-            <button onClick={() => exportarACSV(tanques, 'stock_cisternas')} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Exportar Stock</button>
+            <button onClick={() => exportarACSV(tanques, 'stock_cisternas')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Exportar Stock</button>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '15px', marginBottom: '30px' }}>
             {tanques.length > 0 ? (
               tanques.map(t => {
                 const esNegativo = t.stock_real < 0;
                 return (
-                  <div key={t.id} style={{ backgroundColor: '#131b31', padding: '18px', borderRadius: '10px', border: `1px solid ${esNegativo ? '#ef4444' : '#1e3a8a'}` }}>
-                    <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', color: '#38bdf8' }}>{t.nombre}</h3>
+                  <div key={t.id} style={{ backgroundColor: '#373f42', padding: '18px', borderRadius: '10px', border: `1px solid ${esNegativo ? '#ef4444' : '#3f62a8'}` }}>
+                    <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', color: '#4da3e0' }}>{t.nombre}</h3>
                     <div style={{ fontSize: '26px', fontWeight: 'bold', color: esNegativo ? '#ef4444' : '#4ade80' }}>
                       {t.stock_real.toFixed(1)} Lts {esNegativo && '⚠️ (Déficit)'}
                     </div>
-                    <p style={{ fontSize: '12px', color: '#94a3b8', margin: '6px 0 0 0' }}>Capacidad Máxima: {t.capacidad} Lts</p>
-                    <div style={{ fontSize: '11px', color: '#f59e0b', marginTop: '8px', borderTop: '1px solid #1e3a8a', paddingTop: '8px' }}>
+                    <p style={{ fontSize: '12px', color: '#b4bcc0', margin: '6px 0 0 0' }}>Capacidad Máxima: {t.capacidad} Lts</p>
+                    <div style={{ fontSize: '11px', color: '#7ea4e8', marginTop: '8px', borderTop: '1px solid #1e3a8a', paddingTop: '8px' }}>
                       Entradas: +{t.totalEntradas.toFixed(1)} L<br/>
                       Salidas: -{t.totalSalidas.toFixed(1)} L
                     </div>
@@ -508,50 +540,50 @@ export default function App() {
                 );
               })
             ) : (
-              <div style={{ gridColumn: '1 / -1', padding: '20px', textAlign: 'center', backgroundColor: '#131b31', borderRadius: '8px', color: '#94a3b8' }}>
+              <div style={{ gridColumn: '1 / -1', padding: '20px', textAlign: 'center', backgroundColor: '#373f42', borderRadius: '8px', color: '#b4bcc0' }}>
                 Calculando stock de cisternas...
               </div>
             )}
           </div>
-          <div style={{ backgroundColor: '#131b31', padding: '15px', borderRadius: '10px', border: '1px solid #1e3a8a', marginBottom: '20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ backgroundColor: '#373f42', padding: '15px', borderRadius: '10px', border: '1px solid #1e3a8a', marginBottom: '20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Año</label>
-              <select value={dashAnio} onChange={e => setDashAnio(e.target.value)} style={{ padding: '7px 10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
+              <select value={dashAnio} onChange={e => setDashAnio(e.target.value)} style={{ padding: '7px 10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
                 <option value="">Todos</option>
                 {aniosDisponibles.map((a, i) => <option key={i} value={a}>{a}</option>)}
               </select>
             </div>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Mes</label>
-              <select value={dashMes} onChange={e => setDashMes(e.target.value)} style={{ padding: '7px 10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
+              <select value={dashMes} onChange={e => setDashMes(e.target.value)} style={{ padding: '7px 10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
                 <option value="">Todos</option>
                 {mesesDisponibles.map((m, i) => <option key={i} value={m.num}>{m.nombre}</option>)}
               </select>
             </div>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Obra</label>
-              <select value={dashObra} onChange={e => setDashObra(e.target.value)} style={{ padding: '7px 10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
+              <select value={dashObra} onChange={e => setDashObra(e.target.value)} style={{ padding: '7px 10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
                 <option value="">Todas</option>
                 {obrasDisponibles.map((ob, i) => <option key={i} value={ob}>{ob}</option>)}
               </select>
             </div>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Desde</label>
-              <input type="date" value={dashDesde} onChange={e => setDashDesde(e.target.value)} style={{ padding: '6px 10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
+              <input type="date" value={dashDesde} onChange={e => setDashDesde(e.target.value)} style={{ padding: '6px 10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
             </div>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Hasta</label>
-              <input type="date" value={dashHasta} onChange={e => setDashHasta(e.target.value)} style={{ padding: '6px 10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
+              <input type="date" value={dashHasta} onChange={e => setDashHasta(e.target.value)} style={{ padding: '6px 10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
             </div>
             <div style={{ display: 'flex', alignItems: 'flex-end', marginTop: '16px' }}>
-              <button onClick={() => { setDashAnio(''); setDashMes(''); setDashObra(''); setDashDesde(''); setDashHasta(''); }} style={{ background: '#334155', color: '#fff', border: 'none', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>Limpiar Filtros</button>
+              <button onClick={() => { setDashAnio(''); setDashMes(''); setDashObra(''); setDashDesde(''); setDashHasta(''); }} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>Limpiar Filtros</button>
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '20px' }}>
-            <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+            <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                <h3 style={{ fontSize: '15px', color: '#f59e0b', margin: 0 }}>📊 Consumo Total (Litros)</h3>
-                <button onClick={() => exportarACSV(consumoOrdenado.map(([v, l]) => ({ Equipo: v, Litros: l })), 'consumo_total')} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>CSV</button>
+                <h3 style={{ fontSize: '15px', color: '#7ea4e8', margin: 0 }}>📊 Consumo Total (Litros)</h3>
+                <button onClick={() => exportarACSV(consumoOrdenado.map(([v, l]) => ({ Equipo: v, Litros: l })), 'consumo_total')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>CSV</button>
               </div>
               {consumoOrdenado.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '380px', overflowY: 'auto' }}>
@@ -559,9 +591,9 @@ export default function App() {
                     const porcentaje = Math.max(4, (litros / maxLitrosConsumo) * 100);
                     return (
                       <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <div style={{ width: '90px', fontSize: '11px', fontWeight: 'bold', color: '#38bdf8', textAlign: 'right' }}>{vehiculo}</div>
-                        <div style={{ flex: 1, backgroundColor: '#0b1329', borderRadius: '6px', height: '22px', position: 'relative', overflow: 'hidden', border: '1px solid #1e3a8a' }}>
-                          <div style={{ width: `${porcentaje}%`, backgroundColor: '#f59e0b', height: '100%', borderRadius: '4px' }}></div>
+                        <div style={{ width: '90px', fontSize: '11px', fontWeight: 'bold', color: '#4da3e0', textAlign: 'right' }}>{vehiculo}</div>
+                        <div style={{ flex: 1, backgroundColor: '#2b3133', borderRadius: '6px', height: '22px', position: 'relative', overflow: 'hidden', border: '1px solid #1e3a8a' }}>
+                          <div style={{ width: `${porcentaje}%`, backgroundColor: '#7ea4e8', height: '100%', borderRadius: '4px' }}></div>
                           <span style={{ position: 'absolute', right: '8px', top: '2px', fontSize: '11px', fontWeight: 'bold', color: '#fff' }}>{litros.toFixed(1)} L</span>
                         </div>
                       </div>
@@ -569,13 +601,13 @@ export default function App() {
                   })}
                 </div>
               ) : (
-                <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos registrados.</p>
+                <p style={{ color: '#b4bcc0', textAlign: 'center', margin: 0 }}>No hay consumos registrados.</p>
               )}
             </div>
-            <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+            <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                <h3 style={{ fontSize: '15px', color: '#38bdf8', margin: 0 }}>⚡ Consumo de Generadores (GEN01 / GEN02)</h3>
-                <button onClick={() => exportarACSV(generadoresOrdenado.map(([v, l]) => ({ Generador: v, Litros: l })), 'consumo_generadores')} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>CSV</button>
+                <h3 style={{ fontSize: '15px', color: '#4da3e0', margin: 0 }}>⚡ Consumo de Generadores (GEN01 / GEN02)</h3>
+                <button onClick={() => exportarACSV(generadoresOrdenado.map(([v, l]) => ({ Generador: v, Litros: l })), 'consumo_generadores')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>CSV</button>
               </div>
               {generadoresOrdenado.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '380px', overflowY: 'auto' }}>
@@ -583,9 +615,9 @@ export default function App() {
                     const porcentaje = Math.max(4, (litros / maxGen) * 100);
                     return (
                       <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <div style={{ width: '90px', fontSize: '11px', fontWeight: 'bold', color: '#f59e0b', textAlign: 'right' }}>{gen}</div>
-                        <div style={{ flex: 1, backgroundColor: '#0b1329', borderRadius: '6px', height: '22px', position: 'relative', overflow: 'hidden', border: '1px solid #1e3a8a' }}>
-                          <div style={{ width: `${porcentaje}%`, backgroundColor: '#38bdf8', height: '100%', borderRadius: '4px' }}></div>
+                        <div style={{ width: '90px', fontSize: '11px', fontWeight: 'bold', color: '#7ea4e8', textAlign: 'right' }}>{gen}</div>
+                        <div style={{ flex: 1, backgroundColor: '#2b3133', borderRadius: '6px', height: '22px', position: 'relative', overflow: 'hidden', border: '1px solid #1e3a8a' }}>
+                          <div style={{ width: `${porcentaje}%`, backgroundColor: '#4da3e0', height: '100%', borderRadius: '4px' }}></div>
                           <span style={{ position: 'absolute', right: '8px', top: '2px', fontSize: '11px', fontWeight: 'bold', color: '#fff' }}>{litros.toFixed(1)} L</span>
                         </div>
                       </div>
@@ -593,13 +625,13 @@ export default function App() {
                   })}
                 </div>
               ) : (
-                <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay consumos de generadores registrados.</p>
+                <p style={{ color: '#b4bcc0', textAlign: 'center', margin: 0 }}>No hay consumos de generadores registrados.</p>
               )}
             </div>
-            <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+            <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                <h3 style={{ fontSize: '15px', color: '#38bdf8', margin: 0 }}>📈 Rendimiento Promedio (L / hs o L / km)</h3>
-                <button onClick={() => exportarACSV(rendimientoOrdenado.map(([v, r]) => ({ Equipo: v, Rendimiento: r })), 'rendimientos')} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>CSV</button>
+                <h3 style={{ fontSize: '15px', color: '#4da3e0', margin: 0 }}>📈 Rendimiento Promedio (L / hs o L / km)</h3>
+                <button onClick={() => exportarACSV(rendimientoOrdenado.map(([v, r]) => ({ Equipo: v, Rendimiento: r })), 'rendimientos')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>CSV</button>
               </div>
               {rendimientoOrdenado.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '380px', overflowY: 'auto' }}>
@@ -607,9 +639,9 @@ export default function App() {
                     const porcentaje = Math.max(4, (rend / maxRendimiento) * 100);
                     return (
                       <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <div style={{ width: '90px', fontSize: '11px', fontWeight: 'bold', color: '#f59e0b', textAlign: 'right' }}>{vehiculo}</div>
-                        <div style={{ flex: 1, backgroundColor: '#0b1329', borderRadius: '6px', height: '22px', position: 'relative', overflow: 'hidden', border: '1px solid #1e3a8a' }}>
-                          <div style={{ width: `${porcentaje}%`, backgroundColor: '#38bdf8', height: '100%', borderRadius: '4px' }}></div>
+                        <div style={{ width: '90px', fontSize: '11px', fontWeight: 'bold', color: '#7ea4e8', textAlign: 'right' }}>{vehiculo}</div>
+                        <div style={{ flex: 1, backgroundColor: '#2b3133', borderRadius: '6px', height: '22px', position: 'relative', overflow: 'hidden', border: '1px solid #1e3a8a' }}>
+                          <div style={{ width: `${porcentaje}%`, backgroundColor: '#4da3e0', height: '100%', borderRadius: '4px' }}></div>
                           <span style={{ position: 'absolute', right: '8px', top: '2px', fontSize: '11px', fontWeight: 'bold', color: '#fff' }}>{rend.toFixed(2)} L/u</span>
                         </div>
                       </div>
@@ -617,45 +649,65 @@ export default function App() {
                   })}
                 </div>
               ) : (
-                <p style={{ color: '#94a3b8', textAlign: 'center', margin: 0 }}>No hay datos suficientes de rendimiento.</p>
+                <p style={{ color: '#b4bcc0', textAlign: 'center', margin: 0 }}>No hay datos suficientes de rendimiento.</p>
               )}
             </div>
           </div>
         </div>
       )}
       {pestana === 'historial' && (
-        <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+        <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
-            <h2 style={{ fontSize: '18px', color: '#f59e0b', margin: 0 }}>Historial Completo y Filtros por Fecha</h2>
-            <button onClick={() => exportarACSV(cargasFiltradas, 'historial_cargas')} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '8px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>📥 Descargar Historial (CSV)</button>
+            <h2 style={{ fontSize: '18px', color: '#7ea4e8', margin: 0 }}>Historial Completo y Filtros por Fecha</h2>
+            <button onClick={() => exportarACSV(cargasFiltradas, 'historial_cargas')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '8px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>📥 Descargar Historial (CSV)</button>
           </div>
           <div style={{ display: 'flex', gap: '15px', marginBottom: '20px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1', display: 'block', marginBottom: '5px' }}>Año</label>
-              <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={{ padding: '8px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
+              <select value={filtroAnio} onChange={e => setFiltroAnio(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
                 <option value="">Todos</option>
                 {aniosDisponibles.map((a, i) => <option key={i} value={a}>{a}</option>)}
               </select>
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1', display: 'block', marginBottom: '5px' }}>Mes</label>
-              <select value={filtroMes} onChange={e => setFiltroMes(e.target.value)} style={{ padding: '8px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
+              <select value={filtroMes} onChange={e => setFiltroMes(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
                 <option value="">Todos</option>
                 {mesesDisponibles.map((m, i) => <option key={i} value={m.num}>{m.nombre}</option>)}
               </select>
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1', display: 'block', marginBottom: '5px' }}>Día (Ej: 16)</label>
-              <input type="text" placeholder="Todos" value={filtroDia} onChange={e => setFiltroDia(e.target.value)} style={{ padding: '8px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', width: '80px' }} />
+              <input type="text" placeholder="Todos" value={filtroDia} onChange={e => setFiltroDia(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', width: '80px' }} />
             </div>
             <div>
-              <button onClick={() => { setFiltroAnio(''); setFiltroMes(''); setFiltroDia(''); }} style={{ background: '#334155', color: '#fff', border: 'none', padding: '9px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Limpiar Filtros</button>
+              <button onClick={() => { setFiltroAnio(''); setFiltroMes(''); setFiltroDia(''); }} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Limpiar Filtros</button>
             </div>
           </div>
+          {edit && esAdmin && (
+            <div style={{ background: '#2b3133', border: '1px solid #7ea4e8', borderRadius: '10px', padding: '15px', marginBottom: '15px' }}>
+              <h3 style={{ color: '#7ea4e8', margin: '0 0 10px', fontSize: '15px' }}>✏️ Editando registro #{edit.id} ({edit['Tipo Movimiento']})</h3>
+              <datalist id="dl-choferes">{choferes.map((c, i) => <option key={i} value={c.nombre} />)}</datalist>
+              <datalist id="dl-obras">{obrasDisponibles.map((o, i) => <option key={i} value={o} />)}</datalist>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Fecha<input type="date" value={edit.Fecha || ''} onChange={e => setEdit({ ...edit, Fecha: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Equipo<input list="lista-equipos" value={edit.Equipo || ''} onChange={e => setEdit({ ...edit, Equipo: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Chofer<input list="dl-choferes" value={edit.Chofer || ''} onChange={e => setEdit({ ...edit, Chofer: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Obra<input list="dl-obras" value={edit.Obra || ''} onChange={e => setEdit({ ...edit, Obra: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Litros reales<input type="number" step="any" value={edit['Litros Reales'] ?? ''} onChange={e => setEdit({ ...edit, 'Litros Reales': e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Observaciones<input value={edit.Observaciones || ''} onChange={e => setEdit({ ...edit, Observaciones: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+                <button onClick={handleGuardarEdicion} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar cambios</button>
+                <button onClick={() => setEdit(null)} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer' }}>Cancelar</button>
+                <button onClick={handleEliminarRegistro} style={{ background: '#ef4444', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer', marginLeft: 'auto' }}>Eliminar registro</button>
+              </div>
+            </div>
+          )}
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#94a3b8', backgroundColor: '#0b1329' }}>
+                <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#b4bcc0', backgroundColor: '#2b3133' }}>
                   <th style={{ padding: '12px' }}>Fecha</th>
                   <th style={{ padding: '12px' }}>Movimiento</th>
                   <th style={{ padding: '12px' }}>Origen</th>
@@ -663,6 +715,7 @@ export default function App() {
                   <th style={{ padding: '12px' }}>Chofer</th>
                   <th style={{ padding: '12px' }}>Litros</th>
                   <th style={{ padding: '12px' }}>Obra</th>
+                  {esAdmin && <th style={{ padding: '12px' }}></th>}
                 </tr>
               </thead>
               <tbody>
@@ -670,17 +723,18 @@ export default function App() {
                   cargasFiltradas.map((c, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid #131b31' }}>
                       <td style={{ padding: '12px' }}>{c.Fecha || '-'}</td>
-                      <td style={{ padding: '12px', color: c['Tipo Movimiento'] === 'Compra' ? '#4ade80' : '#38bdf8' }}>{c['Tipo Movimiento'] || '-'}</td>
+                      <td style={{ padding: '12px', color: c['Tipo Movimiento'] === 'Compra' ? '#4ade80' : '#4da3e0' }}>{c['Tipo Movimiento'] || '-'}</td>
                       <td style={{ padding: '12px' }}>{c.Origen || '-'}</td>
                       <td style={{ padding: '12px', fontWeight: 'bold' }}>{c.Equipo || '-'}</td>
                       <td style={{ padding: '12px' }}>{c.Chofer || '-'}</td>
-                      <td style={{ padding: '12px', fontWeight: 'bold', color: '#f59e0b' }}>{c['Litros Reales'] || c['Litros Indicados'] || 0} L</td>
+                      <td style={{ padding: '12px', fontWeight: 'bold', color: '#7ea4e8' }}>{c['Tipo Movimiento'] === 'Ajuste de Stock' ? (c['Destino / Equipo'] ? '+' : '−') : ''}{c['Litros Reales'] || c['Litros Indicados'] || 0} L</td>
                       <td style={{ padding: '12px' }}>{c.Obra || '-'}</td>
+                      {esAdmin && <td style={{ padding: '12px' }}><button onClick={() => setEdit({ ...c })} title="Editar" style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px' }}>✏️</button></td>}
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="7" style={{ textAlign: 'center', padding: '30px', color: '#94a3b8' }}>No se encontraron registros.</td>
+                    <td colSpan="8" style={{ textAlign: 'center', padding: '30px', color: '#b4bcc0' }}>No se encontraron registros.</td>
                   </tr>
                 )}
               </tbody>
@@ -689,24 +743,25 @@ export default function App() {
         </div>
       )}
       {pestana === 'nueva_carga' && esAdmin && (
-        <div style={{ maxWidth: '650px', margin: '0 auto', backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
-          <h2 style={{ fontSize: '18px', marginBottom: '20px', color: '#f59e0b' }}>+ Registrar Nueva Carga Manual</h2>
+        <div style={{ maxWidth: '650px', margin: '0 auto', backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+          <h2 style={{ fontSize: '18px', marginBottom: '20px', color: '#7ea4e8' }}>+ Registrar Nueva Carga Manual</h2>
           <form onSubmit={handleGuardarCargaManual} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '15px' }}>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Fecha</label>
-              <input type="date" value={formCarga.Fecha} onChange={e => setFormCarga({...formCarga, Fecha: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
+              <input type="date" value={formCarga.Fecha} onChange={e => setFormCarga({...formCarga, Fecha: e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Tipo de Movimiento</label>
-              <select value={formCarga["Tipo Movimiento"]} onChange={e => setFormCarga({...formCarga, "Tipo Movimiento": e.target.value})} style={{ width: '100%', padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
+              <select value={formCarga["Tipo Movimiento"]} onChange={e => setFormCarga({...formCarga, "Tipo Movimiento": e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
                 <option value="Consumo">Consumo</option>
                 <option value="Transferencia">Transferencia (Cisterna PPL -&gt; Camión)</option>
                 <option value="Compra">Compra / Ingreso</option>
+                <option value="Ajuste">Ajuste de Stock (Corte Mensual)</option>
               </select>
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Origen / Cisterna</label>
-              <select value={formCarga.Origen} onChange={e => setFormCarga({...formCarga, Origen: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
+              <select value={formCarga.Origen} onChange={e => setFormCarga({...formCarga, Origen: e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
                 <option value="Cisterna Camión">Cisterna Camión (Reparto)</option>
                 <option value="Cisterna Principal (PPL)">Cisterna Principal (PPL)</option>
                 <option value="YPF">YPF (Compra Principal)</option>
@@ -720,7 +775,7 @@ export default function App() {
                 placeholder="Escribe o selecciona..." 
                 value={formCarga.Equipo} 
                 onChange={e => handleSeleccionEquipoForm(e.target.value)} 
-                style={{ width: '100%', padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }} 
+                style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }} 
               />
               <datalist id="lista-equipos">
                 {equipos.map((eq, i) => <option key={i} value={eq.codigo}>{eq.descripcion || eq.codigo}</option>)}
@@ -728,14 +783,14 @@ export default function App() {
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Chofer / Responsable</label>
-              <select value={formCarga.Chofer} onChange={e => setFormCarga({...formCarga, Chofer: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
+              <select value={formCarga.Chofer} onChange={e => setFormCarga({...formCarga, Chofer: e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
                 <option value="">Seleccionar Chofer...</option>
                 {choferes.map(ch => <option key={ch.id} value={ch.nombre}>{ch.nombre} (Habitual: {ch.equipo_habitual || 'N/A'})</option>)}
               </select>
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Obra</label>
-              <select value={formCarga.Obra} onChange={e => setFormCarga({...formCarga, Obra: e.target.value})} style={{ width: '100%', padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
+              <select value={formCarga.Obra} onChange={e => setFormCarga({...formCarga, Obra: e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
                 <option value="RN40">RN40</option>
                 <option value="CANTERA">CANTERA</option>
                 <option value="PLANTA ÁRIDOS">PLANTA ÁRIDOS</option>
@@ -744,18 +799,19 @@ export default function App() {
             </div>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Tipo Combustible</label>
-              <select value={formCarga["Tipo Combustible"]} onChange={e => setFormCarga({...formCarga, "Tipo Combustible": e.target.value})} style={{ width: '100%', padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
+              <select value={formCarga["Tipo Combustible"]} onChange={e => setFormCarga({...formCarga, "Tipo Combustible": e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
                 <option value="Infinia Diesel">Infinia Diesel</option>
                 <option value="Diesel 500">Diesel 500</option>
                 <option value="Nafta">Nafta</option>
               </select>
             </div>
             <div>
-              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Litros Cargados</label>
-              <input type="number" placeholder="Ej: 150" value={formCarga["Litros Indicados"]} onChange={e => setFormCarga({...formCarga, "Litros Indicados": e.target.value})} style={{ width: '100%', padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
+              <label style={{ fontSize: '12px', color: '#cbd5e1' }}>{formCarga["Tipo Movimiento"] === 'Ajuste' ? 'Litros de ajuste (+ sobra / - falta)' : 'Litros Cargados'}</label>
+              {formCarga["Tipo Movimiento"] === 'Ajuste' && (() => { const t = tanques.find(x => x.nombre === formCarga.Origen); return <p style={{ fontSize: '12px', color: '#7ea4e8', margin: '4px 0 0' }}>{t ? `El sistema marca ${t.stock_real.toFixed(1)} L en esta cisterna. Si la varilla marca otro valor, cargá la diferencia.` : 'Elegí una cisterna en "Origen / Cisterna".'}</p>; })()}
+              <input type="number" step="any" placeholder="Ej: 150" value={formCarga["Litros Indicados"]} onChange={e => setFormCarga({...formCarga, "Litros Indicados": e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
             </div>
             <div style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
-              <button type="submit" style={{ background: '#f59e0b', color: '#000', border: 'none', padding: '12px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>Guardar Carga</button>
+              <button type="submit" style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '12px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>Guardar Carga</button>
             </div>
           </form>
         </div>
@@ -763,12 +819,12 @@ export default function App() {
       {pestana === 'equipos' && (
         <div style={{ maxWidth: '950px', margin: '0 auto' }}>
           {esAdmin && (
-            <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
-              <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>+ Agregar Nuevo Equipo / Vehículo</h2>
+            <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
+              <h2 style={{ fontSize: '18px', color: '#7ea4e8', marginBottom: '15px' }}>+ Agregar Nuevo Equipo / Vehículo</h2>
               <form onSubmit={handleGuardarEquipo} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
-                <input type="text" placeholder="Código (Ej: M048)" value={nuevoEquipo.codigo} onChange={e => setNuevoEquipo({...nuevoEquipo, codigo: e.target.value})} style={{ padding: '8px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
-                <input type="text" placeholder="Descripción (Ej: Excavadora CAT)" value={nuevoEquipo.descripcion} onChange={e => setNuevoEquipo({...nuevoEquipo, descripcion: e.target.value})} style={{ padding: '8px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
-                <select value={nuevoEquipo.tipo} onChange={e => setNuevoEquipo({...nuevoEquipo, tipo: e.target.value})} style={{ padding: '8px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
+                <input type="text" placeholder="Código (Ej: M048)" value={nuevoEquipo.codigo} onChange={e => setNuevoEquipo({...nuevoEquipo, codigo: e.target.value})} style={{ padding: '8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
+                <input type="text" placeholder="Descripción (Ej: Excavadora CAT)" value={nuevoEquipo.descripcion} onChange={e => setNuevoEquipo({...nuevoEquipo, descripcion: e.target.value})} style={{ padding: '8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
+                <select value={nuevoEquipo.tipo} onChange={e => setNuevoEquipo({...nuevoEquipo, tipo: e.target.value})} style={{ padding: '8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
                   <option value="Máquina">Máquina (Service c/250 hs)</option>
                   <option value="Camión / Vehículo">Camión / Vehículo (Service c/400 km)</option>
                 </select>
@@ -776,14 +832,14 @@ export default function App() {
               </form>
             </div>
           )}
-          <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+          <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-              <h2 style={{ fontSize: '18px', color: '#38bdf8', margin: 0 }}>Gestión de Flota y Cambio de Obra ({equipos.length})</h2>
-              <button onClick={() => exportarACSV(equipos, 'flota_equipos')} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Exportar Flota</button>
+              <h2 style={{ fontSize: '18px', color: '#4da3e0', margin: 0 }}>Gestión de Flota y Cambio de Obra ({equipos.length})</h2>
+              <button onClick={() => exportarACSV(equipos, 'flota_equipos')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Exportar Flota</button>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#94a3b8' }}>
+                <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#b4bcc0' }}>
                   <th style={{ padding: '10px' }}>Código</th>
                   <th style={{ padding: '10px' }}>Descripción</th>
                   <th style={{ padding: '10px' }}>Tipo</th>
@@ -793,7 +849,7 @@ export default function App() {
               <tbody>
                 {equipos.map((eq, i) => (
                   <tr key={i} style={{ borderBottom: '1px solid #131b31' }}>
-                    <td style={{ padding: '10px', fontWeight: 'bold', color: '#f59e0b' }}>{eq.codigo}</td>
+                    <td style={{ padding: '10px', fontWeight: 'bold', color: '#7ea4e8' }}>{eq.codigo}</td>
                     <td style={{ padding: '10px' }}>{eq.descripcion || '-'}</td>
                     <td style={{ padding: '10px' }}>{eq.tipo || 'Máquina'}</td>
                     <td style={{ padding: '10px' }}>
@@ -801,7 +857,7 @@ export default function App() {
                         value={eq.obra_predeterminada || 'RN40'} 
                         onChange={e => handleCambiarObraEquipo(eq.codigo, e.target.value)}
                         disabled={!esAdmin}
-                        style={{ padding: '5px 8px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}
+                        style={{ padding: '5px 8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}
                       >
                         <option value="RN40">RN40</option>
                         <option value="CANTERA">CANTERA</option>
@@ -819,23 +875,23 @@ export default function App() {
       {pestana === 'choferes' && (
         <div style={{ maxWidth: '800px', margin: '0 auto' }}>
           {esAdmin && (
-            <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
-              <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>+ Registrar Nuevo Chofer</h2>
+            <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
+              <h2 style={{ fontSize: '18px', color: '#7ea4e8', marginBottom: '15px' }}>+ Registrar Nuevo Chofer</h2>
               <form onSubmit={handleGuardarChofer} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
-                <input type="text" placeholder="Nombre Completo" value={nuevoChofer.nombre} onChange={e => setNuevoChofer({...nuevoChofer, nombre: e.target.value})} style={{ padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
-                <input type="text" placeholder="Equipo Habitual (Ej: M047)" value={nuevoChofer.equipo_habitual} onChange={e => setNuevoChofer({...nuevoChofer, equipo_habitual: e.target.value})} style={{ padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
+                <input type="text" placeholder="Nombre Completo" value={nuevoChofer.nombre} onChange={e => setNuevoChofer({...nuevoChofer, nombre: e.target.value})} style={{ padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
+                <input type="text" placeholder="Equipo Habitual (Ej: M047)" value={nuevoChofer.equipo_habitual} onChange={e => setNuevoChofer({...nuevoChofer, equipo_habitual: e.target.value})} style={{ padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
                 <button type="submit" style={{ background: '#4ade80', color: '#000', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar Chofer</button>
               </form>
             </div>
           )}
-          <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+          <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-              <h2 style={{ fontSize: '18px', color: '#38bdf8', margin: 0 }}>Nómina de Choferes</h2>
-              <button onClick={() => exportarACSV(choferes, 'nomina_choferes')} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Exportar Choferes</button>
+              <h2 style={{ fontSize: '18px', color: '#4da3e0', margin: 0 }}>Nómina de Choferes</h2>
+              <button onClick={() => exportarACSV(choferes, 'nomina_choferes')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Exportar Choferes</button>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#94a3b8' }}>
+                <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#b4bcc0' }}>
                   <th style={{ padding: '10px' }}>Nombre</th>
                   <th style={{ padding: '10px' }}>Equipo Asignado</th>
                 </tr>
@@ -844,7 +900,7 @@ export default function App() {
                 {choferes.map((ch, i) => (
                   <tr key={i} style={{ borderBottom: '1px solid #131b31' }}>
                     <td style={{ padding: '10px', fontWeight: 'bold' }}>{ch.nombre}</td>
-                    <td style={{ padding: '10px', color: '#f59e0b' }}>{ch.equipo_habitual || 'Sin Asignar'}</td>
+                    <td style={{ padding: '10px', color: '#7ea4e8' }}>{ch.equipo_habitual || 'Sin Asignar'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -855,33 +911,34 @@ export default function App() {
       {pestana === 'mantenimiento' && (
         <div style={{ maxWidth: '950px', margin: '0 auto' }}>
           {esAdmin && (
-            <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
-              <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>🛠️ Registrar Service Realizado</h2>
+            <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
+              <h2 style={{ fontSize: '18px', color: '#7ea4e8', marginBottom: '15px' }}>🛠️ Registrar Service Realizado</h2>
               <form onSubmit={handleRegistrarService} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
-                <select value={formService.codigo_equipo} onChange={e => setFormService({...formService, codigo_equipo: e.target.value})} style={{ padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
+                <select value={formService.codigo_equipo} onChange={e => setFormService({...formService, codigo_equipo: e.target.value})} style={{ padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
                   <option value="">Seleccionar Equipo...</option>
                   {equipos.map((e, i) => <option key={i} value={e.codigo}>{e.codigo} - {e.descripcion}</option>)}
                 </select>
-                <input type="number" placeholder="Horómetro / Km del Service" value={formService.hm_km_actual} onChange={e => setFormService({...formService, hm_km_actual: e.target.value})} style={{ padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
-                <input type="text" placeholder="Detalles (Ej: Filtro aceite, aire)" value={formService.observaciones} onChange={e => setFormService({...formService, observaciones: e.target.value})} style={{ padding: '10px', background: '#0b1329', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
-                <button type="submit" style={{ background: '#f59e0b', color: '#000', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar Service</button>
+                <input type="number" placeholder="Horómetro / Km del Service" value={formService.hm_km_actual} onChange={e => setFormService({...formService, hm_km_actual: e.target.value})} style={{ padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
+                <input type="text" placeholder="Detalles (Ej: Filtro aceite, aire)" value={formService.observaciones} onChange={e => setFormService({...formService, observaciones: e.target.value})} style={{ padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
+                <button type="submit" style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar Service</button>
               </form>
             </div>
           )}
-          <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
+          <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-              <h2 style={{ fontSize: '18px', color: '#38bdf8', margin: 0 }}>Control de Mantenimiento Preventivo</h2>
-              <button onClick={() => exportarACSV(estadoMantenimientoEquipos, 'mantenimiento_preventivo')} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Exportar Mantenimiento</button>
+              <h2 style={{ fontSize: '18px', color: '#4da3e0', margin: 0 }}>Control de Mantenimiento Preventivo</h2>
+              <button onClick={() => exportarACSV(estadoMantenimientoEquipos, 'mantenimiento_preventivo')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Exportar Mantenimiento</button>
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
                 <thead>
-                  <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#94a3b8', backgroundColor: '#0b1329' }}>
+                  <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#b4bcc0', backgroundColor: '#2b3133' }}>
                     <th style={{ padding: '10px' }}>Equipo</th>
                     <th style={{ padding: '10px' }}>Tipo</th>
                     <th style={{ padding: '10px' }}>Última Lectura</th>
                     <th style={{ padding: '10px' }}>Último Service</th>
-                    <th style={{ padding: '10px' }}>Intervalo</th>
+                    <th style={{ padding: '10px' }}>Recorrido desde service</th>
+                    <th style={{ padding: '10px' }}>Intervalo (editable)</th>
                     <th style={{ padding: '10px' }}>Estado Preventivo</th>
                   </tr>
                 </thead>
@@ -892,19 +949,25 @@ export default function App() {
                       <td style={{ padding: '10px' }}>{m.tipo}</td>
                       <td style={{ padding: '10px', fontWeight: 'bold' }}>{m.ultimoLectura} hs/km</td>
                       <td style={{ padding: '10px' }}>{m.ultimoServiceLectura} hs/km</td>
-                      <td style={{ padding: '10px' }}>Cada {m.intervaloService} hs/km</td>
-                      <td style={{ padding: '10px', fontWeight: 'bold', color: m.colorEstado }}>{m.estado}</td>
+                      <td style={{ padding: '10px', fontWeight: 'bold' }}>{m.horasDesdeUltimoService.toFixed(0)} hs/km</td>
+                      <td style={{ padding: '10px' }}><input key={m.codigo + m.intervaloService} type="number" defaultValue={m.intervaloService} disabled={!esAdmin} onBlur={e => handleCambiarIntervalo(m.codigo, e.target.value)} style={{ width: '70px', padding: '5px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} /> hs/km</td>
+                      <td style={{ padding: '10px', minWidth: '190px' }}>
+                        <div style={{ background: '#2b3133', borderRadius: '6px', height: '12px', overflow: 'hidden', border: '1px solid #505a5e' }}>
+                          <div style={{ width: `${Math.min(m.pct * 100, 100)}%`, height: '100%', background: 'linear-gradient(90deg, #4ade80 0%, #facc15 60%, #f97316 85%, #ef4444 100%)', backgroundSize: `${100 / Math.max(Math.min(m.pct, 1), 0.01)}% 100%` }} />
+                        </div>
+                        <div style={{ fontSize: '11px', color: m.colorEstado, fontWeight: 'bold', marginTop: '4px' }}>{m.estado}</div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           </div>
-          <div style={{ backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
-            <h2 style={{ fontSize: '18px', color: '#f59e0b', marginBottom: '15px' }}>📜 Historial de Services Registrados</h2>
+          <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+            <h2 style={{ fontSize: '18px', color: '#7ea4e8', marginBottom: '15px' }}>📜 Historial de Services Registrados</h2>
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#94a3b8', backgroundColor: '#0b1329' }}>
+                <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#b4bcc0', backgroundColor: '#2b3133' }}>
                   <th style={{ padding: '10px' }}>Fecha</th>
                   <th style={{ padding: '10px' }}>Equipo</th>
                   <th style={{ padding: '10px' }}>Horómetro / KM</th>
@@ -917,7 +980,7 @@ export default function App() {
                   mantenimientos.map((m, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid #131b31' }}>
                       <td style={{ padding: '10px' }}>{m.fecha || '-'}</td>
-                      <td style={{ padding: '10px', fontWeight: 'bold', color: '#38bdf8' }}>{m.codigo_equipo}</td>
+                      <td style={{ padding: '10px', fontWeight: 'bold', color: '#4da3e0' }}>{m.codigo_equipo}</td>
                       <td style={{ padding: '10px' }}>{m.ultimo_hm_km}</td>
                       <td style={{ padding: '10px' }}>{m.tipo_service}</td>
                       <td style={{ padding: '10px' }}>{m.observaciones || '-'}</td>
@@ -925,7 +988,7 @@ export default function App() {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="5" style={{ textAlign: 'center', padding: '20px', color: '#94a3b8' }}>No hay services registrados.</td>
+                    <td colSpan="5" style={{ textAlign: 'center', padding: '20px', color: '#b4bcc0' }}>No hay services registrados.</td>
                   </tr>
                 )}
               </tbody>
@@ -934,18 +997,18 @@ export default function App() {
         </div>
       )}
       {pestana === 'excel' && esAdmin && (
-        <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#131b31', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
-          <h2 style={{ fontSize: '18px', color: '#38bdf8', marginBottom: '10px' }}>Importar Planilla CSV</h2>
-          <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '15px' }}>Subí tu archivo CSV exportado de Excel (delimitado por punto y coma):</p>
+        <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+          <h2 style={{ fontSize: '18px', color: '#4da3e0', marginBottom: '10px' }}>Importar Planilla CSV</h2>
+          <p style={{ fontSize: '13px', color: '#b4bcc0', marginBottom: '15px' }}>Subí tu archivo CSV exportado de Excel (delimitado por punto y coma):</p>
           <input type="file" accept=".csv" onChange={handleCargarArchivo} style={{ color: '#f8fafc', marginBottom: '15px', width: '100%' }} />
           {excelName && (
-            <div style={{ background: '#0b1329', padding: '15px', borderRadius: '8px', marginTop: '10px' }}>
-              <p style={{ fontSize: '14px', color: '#f59e0b', margin: '0 0 10px 0' }}>Archivo: {excelName} ({Math.max(excelRows.length - 1, 0)} filas de datos)</p>
+            <div style={{ background: '#2b3133', padding: '15px', borderRadius: '8px', marginTop: '10px' }}>
+              <p style={{ fontSize: '14px', color: '#7ea4e8', margin: '0 0 10px 0' }}>Archivo: {excelName} ({Math.max(excelRows.length - 1, 0)} filas de datos)</p>
           <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '10px' }}>
             <input type="checkbox" checked={reemplazarTodo} onChange={e => setReemplazarTodo(e.target.checked)} /> Reemplazar todo el historial (evita duplicados si ya subiste este archivo)
           </label>
-          {excelMsg && <p style={{ fontSize: '13px', color: '#38bdf8', margin: '0 0 10px 0' }}>{excelMsg}</p>}
-              <button onClick={procesarYSubirLote} disabled={subiendoExcel} style={{ background: '#38bdf8', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>
+          {excelMsg && <p style={{ fontSize: '13px', color: '#4da3e0', margin: '0 0 10px 0' }}>{excelMsg}</p>}
+              <button onClick={procesarYSubirLote} disabled={subiendoExcel} style={{ background: '#4da3e0', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>
                 {subiendoExcel ? 'Sincronizando...' : 'Sincronizar Lote con Supabase'}
               </button>
             </div>
