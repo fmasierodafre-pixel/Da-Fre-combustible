@@ -41,6 +41,59 @@ function aNum(v) {
 }
 function numTxt(v) { const n = aNum(v); return n === null ? '' : String(n); }
 
+const PERMISOS = {
+  admin: ['dashboard', 'historial', 'nueva_carga', 'equipos', 'choferes', 'mantenimiento', 'obras', 'excel'],
+  gerencia: ['dashboard'],
+  logistica: ['dashboard', 'equipos', 'obras'],
+  mantenimiento: ['mantenimiento'],
+  playero: ['nueva_carga'],
+  administrativo: ['historial', 'excel']
+};
+const ETIQUETA_ROL = { admin: '👑 Administrador', gerencia: '📈 Gerencia', logistica: '⛽ Logística', mantenimiento: '🛠️ Mantenimiento', playero: '📝 Carga de combustible', administrativo: '📊 Administrativo' };
+
+// XLSX-START: genera un .xlsx real sin librerías externas
+const crcTabla = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = (u8) => { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = crcTabla[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+function crearZip(archivos) {
+  const enc = new TextEncoder(); const partes = [], central = []; let offset = 0;
+  const u16 = (n) => [n & 255, (n >> 8) & 255];
+  const u32 = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+  archivos.forEach(([nombre, texto]) => {
+    const nb = enc.encode(nombre), datos = enc.encode(texto), crc = crc32(datos);
+    const local = new Uint8Array([0x50, 0x4b, 3, 4, 20, 0, 0, 8, 0, 0, 0, 0, 0, 0, ...u32(crc), ...u32(datos.length), ...u32(datos.length), ...u16(nb.length), 0, 0]);
+    partes.push(local, nb, datos);
+    central.push(new Uint8Array([0x50, 0x4b, 1, 2, 20, 0, 20, 0, 0, 8, 0, 0, 0, 0, 0, 0, ...u32(crc), ...u32(datos.length), ...u32(datos.length), ...u16(nb.length), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...u32(offset)]), nb);
+    offset += local.length + nb.length + datos.length;
+  });
+  const tam = central.reduce((a, b) => a + b.length, 0);
+  const fin = new Uint8Array([0x50, 0x4b, 5, 6, 0, 0, 0, 0, ...u16(archivos.length), ...u16(archivos.length), ...u32(tam), ...u32(offset), 0, 0]);
+  return new Blob([...partes, ...central, fin], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+const escXml = (v) => String(v).replace(/[<>&"]/g, ch => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[ch])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+const colLetra = (i) => { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+function crearXlsx(datos, nombreHoja) {
+  const keys = Object.keys(datos[0]);
+  const celda = (v, c, r, estilo) => {
+    const ref = colLetra(c) + r;
+    if (v === null || v === undefined || v === '') return '';
+    if (typeof v === 'number' && isFinite(v)) return `<c r="${ref}"${estilo ? ' s="1"' : ''}><v>${v}</v></c>`;
+    return `<c r="${ref}" t="inlineStr"${estilo ? ' s="1"' : ''}><is><t xml:space="preserve">${escXml(typeof v === 'object' ? JSON.stringify(v) : v)}</t></is></c>`;
+  };
+  let filas = `<row r="1">${keys.map((k, c) => celda(k, c, 1, true)).join('')}</row>`;
+  datos.forEach((d, i) => { filas += `<row r="${i + 2}">${keys.map((k, c) => celda(d[k], c, i + 2, false)).join('')}</row>`; });
+  const hoja = String(nombreHoja || 'Datos').replace(/[\\/?*\[\]:]/g, '').slice(0, 31) || 'Datos';
+  const X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  return crearZip([
+    ['[Content_Types].xml', `${X}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
+    ['_rels/.rels', `${X}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+    ['xl/workbook.xml', `${X}<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${escXml(hoja)}" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+    ['xl/_rels/workbook.xml.rels', `${X}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+    ['xl/styles.xml', `${X}<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF3F62A8"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`],
+    ['xl/worksheets/sheet1.xml', `${X}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="${keys.length}" width="20" customWidth="1"/></cols><sheetData>${filas}</sheetData><autoFilter ref="A1:${colLetra(keys.length - 1)}${datos.length + 1}"/></worksheet>`]
+  ]);
+}
+// XLSX-END
+
 export default function App() {
   const [tanques, setTanques] = useState([]);
   const [todasLasCargas, setTodasLasCargas] = useState([]);
@@ -56,7 +109,17 @@ export default function App() {
   const [mantenimientos, setMantenimientos] = useState([]);
   const [pestana, setPestana] = useState('dashboard');
   const [loading, setLoading] = useState(false);
-  const [esAdmin, setEsAdmin] = useState(true);
+  const [sesion, setSesion] = useState(null);
+  const [rol, setRol] = useState(null);
+  const [authListo, setAuthListo] = useState(false);
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [loginMsg, setLoginMsg] = useState('');
+  const [obrasLista, setObrasLista] = useState([]);
+  const [nombreObraNueva, setNombreObraNueva] = useState('');
+  const esAdmin = rol === 'admin';
+  const puede = (t) => (PERMISOS[rol] || []).includes(t);
+  const puedeEditarHist = rol === 'admin' || rol === 'administrativo';
+  const puedeServices = rol === 'admin' || rol === 'mantenimiento';
   const [filtroAnio, setFiltroAnio] = useState('');
   const [filtroMes, setFiltroMes] = useState('');
   const [filtroDia, setFiltroDia] = useState('');
@@ -87,10 +150,31 @@ export default function App() {
   const [excelMsg, setExcelMsg] = useState('');
   const [edit, setEdit] = useState(null);
   const [reemplazarTodo, setReemplazarTodo] = useState(true);
-  useEffect(() => {
-    if (supabase) {
+  async function cargarRol(session) {
+    if (!session) { setSesion(null); setRol(null); setAuthListo(true); return; }
+    const { data } = await supabase.from('usuarios_app').select('rol, activo').eq('email', (session.user.email || '').toLowerCase()).maybeSingle();
+    if (data && data.activo && PERMISOS[data.rol]) {
+      setSesion(session); setRol(data.rol); setPestana(PERMISOS[data.rol][0]); setLoginMsg('');
       fetchDatos();
+    } else {
+      await supabase.auth.signOut();
+      setSesion(null); setRol(null);
+      setLoginMsg('Tu usuario no está habilitado. Pedile acceso al administrador.');
     }
+    setAuthListo(true);
+  }
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginMsg('Ingresando...');
+    const { data, error } = await supabase.auth.signInWithPassword({ email: loginForm.email.trim(), password: loginForm.password });
+    if (error) { setLoginMsg('Correo o contraseña incorrectos.'); return; }
+    await cargarRol(data.session);
+  };
+  useEffect(() => {
+    if (!supabase) { setAuthListo(true); return; }
+    supabase.auth.getSession().then(({ data }) => cargarRol(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((evento) => { if (evento === 'SIGNED_OUT') cargarRol(null); });
+    return () => sub.subscription.unsubscribe();
   }, []);
   async function traerTodasLasCargas() {
     let todas = [], desde = 0;
@@ -112,6 +196,8 @@ export default function App() {
       const { data: equiposData } = await supabase.from('equipos').select('*');
       const { data: mantData } = await supabase.from('mantenimiento').select('*');
       const { data: choferesData } = await supabase.from('choferes').select('*');
+      const { data: obrasData } = await supabase.from('obras').select('*').order('nombre');
+      if (obrasData) setObrasLista(obrasData);
       if (choferesData && choferesData.length > 0) setChoferes(choferesData);
       if (cargasData) {
         setTodasLasCargas(cargasData);
@@ -306,6 +392,25 @@ export default function App() {
       if (error) throw error;
     } catch (err) { alert('No se pudo guardar el intervalo (¿ejecutaste actualizacion_mejoras.sql?): ' + err.message); }
   };
+  const handleAgregarObra = async () => {
+    const n = nombreObraNueva.trim();
+    if (!n) return;
+    if (obrasLista.some(o => o.nombre.toLowerCase() === n.toLowerCase())) { alert('Esa obra ya existe.'); return; }
+    const { data, error } = await supabase.from('obras').insert([{ nombre: n, activa: true }]).select();
+    if (error) { alert('Error al crear la obra: ' + error.message); return; }
+    setObrasLista([...obrasLista, ...(data || [])]);
+    setNombreObraNueva('');
+  };
+  const handleToggleObra = async (o) => {
+    const { error } = await supabase.from('obras').update({ activa: !o.activa }).eq('id', o.id);
+    if (error) { alert('Error: ' + error.message); return; }
+    setObrasLista(obrasLista.map(x => x.id === o.id ? { ...x, activa: !o.activa } : x));
+  };
+  const resumenObras = obrasLista.map(o => {
+    const cs = todasLasCargas.filter(c => c.Obra === o.nombre);
+    const uniq = (k) => [...new Set(cs.map(c => c[k]).filter(Boolean))];
+    return { ...o, equiposAsignados: equipos.filter(e => e.obra_predeterminada === o.nombre).length, litros: cs.reduce((a, c) => a + (parseFloat(c['Litros Reales']) || 0), 0), equiposQuePasaron: uniq('Equipo'), choferesQuePasaron: uniq('Chofer') };
+  });
   const handleCargarArchivo = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -372,27 +477,13 @@ export default function App() {
     setSubiendoExcel(false);
   };
   const exportarACSV = (arrayDatos, nombreArchivo) => {
-    if (!arrayDatos || arrayDatos.length === 0) {
-      alert('No hay datos para exportar.');
-      return;
-    }
-    const keys = Object.keys(arrayDatos[0]);
-    let csvContent = "data:text/csv;charset=utf-8," + keys.join(";") + "\n";
-    arrayDatos.forEach(item => {
-      const row = keys.map(k => {
-        let val = item[k];
-        if (val === null || val === undefined) val = '';
-        return `\"${String(val).replace(/\"/g, '\"\"')}\"`;
-      }).join(";");
-      csvContent += row + "\n";
-    });
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `${nombreArchivo}_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    if (!arrayDatos || arrayDatos.length === 0) { alert('No hay datos para exportar.'); return; }
+    const url = URL.createObjectURL(crearXlsx(arrayDatos, nombreArchivo));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${nombreArchivo}_${new Date().toISOString().split('T')[0]}.xlsx`;
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const aniosDisponibles = [...new Set(todasLasCargas.map(c => c.Fecha ? c.Fecha.split('-')[0] : '').filter(Boolean))].sort().reverse();
   const mesesDisponibles = [
@@ -401,7 +492,8 @@ export default function App() {
     { num: '07', nombre: 'Julio' }, { num: '08', nombre: 'Agosto' }, { num: '09', nombre: 'Septiembre' },
     { num: '10', nombre: 'Octubre' }, { num: '11', nombre: 'Noviembre' }, { num: '12', nombre: 'Diciembre' }
   ];
-  const obrasDisponibles = [...new Set(todasLasCargas.map(c => c.Obra).filter(Boolean))].sort();
+  const obrasDisponibles = [...new Set([...obrasLista.map(o => o.nombre), ...todasLasCargas.map(c => c.Obra).filter(Boolean)])].sort();
+  const obrasSeleccionables = obrasLista.filter(o => o.activa !== false).map(o => o.nombre).length > 0 ? obrasLista.filter(o => o.activa !== false).map(o => o.nombre) : ['RN40', 'CANTERA', 'PLANTA ÁRIDOS', 'PLANTA ASFALTO'];
   const cargasFiltradas = todasLasCargas.filter(c => {
     if (!c.Fecha) return true;
     const fechaCarga = c.Fecha.split('T')[0];
@@ -485,6 +577,21 @@ export default function App() {
     else if (pct > umbrales[0]) { estado = `ATENCIÓN (${horasRestantes.toFixed(0)} restantes)`; colorEstado = '#facc15'; }
     return { ...eq, ultimoLectura, intervaloService, ultimoServiceLectura, horasDesdeUltimoService, pct, horasRestantes: Math.max(0, horasRestantes), estado, colorEstado };
   });
+  if (!authListo) return <div style={{ minHeight: '100vh', background: '#2b3133', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>Cargando...</div>;
+  if (!sesion) return (
+    <div style={{ minHeight: '100vh', background: '#2b3133', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif', padding: '20px' }}>
+      <form onSubmit={handleLogin} style={{ background: '#fff', borderRadius: '12px', padding: '30px', width: '100%', maxWidth: '360px', borderTop: '6px solid #3f62a8' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
+          <div style={{ background: '#3f62a8', color: '#fff', fontWeight: 'bold', fontSize: '22px', padding: '6px 12px', borderRadius: '4px' }}>DA FRÉ</div>
+          <div style={{ color: '#373f42', fontSize: '13px' }}>Obras Civiles S.A.<br />Control de Combustible y Flota</div>
+        </div>
+        <input type="email" required placeholder="Correo electrónico" value={loginForm.email} onChange={e => setLoginForm({ ...loginForm, email: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #b4bcc0', boxSizing: 'border-box' }} />
+        <input type="password" required placeholder="Contraseña" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '14px', borderRadius: '6px', border: '1px solid #b4bcc0', boxSizing: 'border-box' }} />
+        <button type="submit" style={{ width: '100%', padding: '11px', background: '#0069b4', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Ingresar</button>
+        {loginMsg && <p style={{ color: '#b91c1c', fontSize: '13px', marginBottom: 0 }}>{loginMsg}</p>}
+      </form>
+    </div>
+  );
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#2b3133', color: '#f8fafc', padding: '20px', fontFamily: 'sans-serif' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '15px', backgroundColor: '#ffffff', padding: '15px 25px', borderRadius: '10px', borderBottom: '3px solid #1e3a8a' }}>
@@ -499,21 +606,22 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <span style={{ fontSize: '12px', color: '#4da3e0', background: '#232829', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e3a8a' }}>
-            Perfil: {esAdmin ? '👑 Administrador' : '👤 Operador'}
+            {ETIQUETA_ROL[rol] || rol} · {sesion && sesion.user.email}
           </span>
-          <button onClick={() => setEsAdmin(!esAdmin)} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}>
-            Cambiar Rol
+          <button onClick={() => supabase.auth.signOut()} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}>
+            Salir
           </button>
         </div>
       </header>
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '25px', backgroundColor: '#373f42', padding: '10px', borderRadius: '8px' }}>
-        <button onClick={() => setPestana('dashboard')} style={{ background: pestana === 'dashboard' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'dashboard' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Dashboard</button>
-        <button onClick={() => setPestana('historial')} style={{ background: pestana === 'historial' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'historial' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Historial y Filtros</button>
-        {esAdmin && <button onClick={() => setPestana('nueva_carga')} style={{ background: pestana === 'nueva_carga' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'nueva_carga' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>+ Nueva Carga</button>}
-        <button onClick={() => setPestana('equipos')} style={{ background: pestana === 'equipos' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'equipos' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Equipos y Obras</button>
-        <button onClick={() => setPestana('choferes')} style={{ background: pestana === 'choferes' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'choferes' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Choferes</button>
-        <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'mantenimiento' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Mantenimiento</button>
-        {esAdmin && <button onClick={() => setPestana('excel')} style={{ background: pestana === 'excel' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'excel' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Excel / CSV</button>}
+        {puede('dashboard') && <button onClick={() => setPestana('dashboard')} style={{ background: pestana === 'dashboard' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'dashboard' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Dashboard</button>}
+        {puede('historial') && <button onClick={() => setPestana('historial')} style={{ background: pestana === 'historial' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'historial' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Historial y Filtros</button>}
+        {puede('nueva_carga') && <button onClick={() => setPestana('nueva_carga')} style={{ background: pestana === 'nueva_carga' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'nueva_carga' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>+ Nueva Carga</button>}
+        {puede('equipos') && <button onClick={() => setPestana('equipos')} style={{ background: pestana === 'equipos' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'equipos' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Equipos y Obras</button>}
+        {puede('choferes') && <button onClick={() => setPestana('choferes')} style={{ background: pestana === 'choferes' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'choferes' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Choferes</button>}
+        {puede('mantenimiento') && <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'mantenimiento' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Mantenimiento</button>}
+        {puede('obras') && <button onClick={() => setPestana('obras')} style={{ background: pestana === 'obras' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>🏗️ Obras</button>}
+        {puede('excel') && <button onClick={() => setPestana('excel')} style={{ background: pestana === 'excel' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'excel' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Excel / CSV</button>}
       </div>
       {pestana === 'dashboard' && (
         <div>
@@ -684,14 +792,15 @@ export default function App() {
               <button onClick={() => { setFiltroAnio(''); setFiltroMes(''); setFiltroDia(''); }} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Limpiar Filtros</button>
             </div>
           </div>
-          {edit && esAdmin && (
+          {edit && puedeEditarHist && (
             <div style={{ background: '#2b3133', border: '1px solid #7ea4e8', borderRadius: '10px', padding: '15px', marginBottom: '15px' }}>
               <h3 style={{ color: '#7ea4e8', margin: '0 0 10px', fontSize: '15px' }}>✏️ Editando registro #{edit.id} ({edit['Tipo Movimiento']})</h3>
               <datalist id="dl-choferes">{choferes.map((c, i) => <option key={i} value={c.nombre} />)}</datalist>
+              <datalist id="dl-equipos">{equipos.map((e, i) => <option key={i} value={e.codigo} />)}</datalist>
               <datalist id="dl-obras">{obrasDisponibles.map((o, i) => <option key={i} value={o} />)}</datalist>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
                 <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Fecha<input type="date" value={edit.Fecha || ''} onChange={e => setEdit({ ...edit, Fecha: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
-                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Equipo<input list="lista-equipos" value={edit.Equipo || ''} onChange={e => setEdit({ ...edit, Equipo: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Equipo<input list="dl-equipos" value={edit.Equipo || ''} onChange={e => setEdit({ ...edit, Equipo: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
                 <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Chofer<input list="dl-choferes" value={edit.Chofer || ''} onChange={e => setEdit({ ...edit, Chofer: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
                 <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Obra<input list="dl-obras" value={edit.Obra || ''} onChange={e => setEdit({ ...edit, Obra: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
                 <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Litros reales<input type="number" step="any" value={edit['Litros Reales'] ?? ''} onChange={e => setEdit({ ...edit, 'Litros Reales': e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
@@ -715,7 +824,7 @@ export default function App() {
                   <th style={{ padding: '12px' }}>Chofer</th>
                   <th style={{ padding: '12px' }}>Litros</th>
                   <th style={{ padding: '12px' }}>Obra</th>
-                  {esAdmin && <th style={{ padding: '12px' }}></th>}
+                  {puedeEditarHist && <th style={{ padding: '12px' }}></th>}
                 </tr>
               </thead>
               <tbody>
@@ -729,7 +838,7 @@ export default function App() {
                       <td style={{ padding: '12px' }}>{c.Chofer || '-'}</td>
                       <td style={{ padding: '12px', fontWeight: 'bold', color: '#7ea4e8' }}>{c['Tipo Movimiento'] === 'Ajuste de Stock' ? (c['Destino / Equipo'] ? '+' : '−') : ''}{c['Litros Reales'] || c['Litros Indicados'] || 0} L</td>
                       <td style={{ padding: '12px' }}>{c.Obra || '-'}</td>
-                      {esAdmin && <td style={{ padding: '12px' }}><button onClick={() => setEdit({ ...c })} title="Editar" style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px' }}>✏️</button></td>}
+                      {puedeEditarHist && <td style={{ padding: '12px' }}><button onClick={() => setEdit({ ...c })} title="Editar" style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px' }}>✏️</button></td>}
                     </tr>
                   ))
                 ) : (
@@ -742,7 +851,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {pestana === 'nueva_carga' && esAdmin && (
+      {pestana === 'nueva_carga' && puede('nueva_carga') && (
         <div style={{ maxWidth: '650px', margin: '0 auto', backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
           <h2 style={{ fontSize: '18px', marginBottom: '20px', color: '#7ea4e8' }}>+ Registrar Nueva Carga Manual</h2>
           <form onSubmit={handleGuardarCargaManual} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '15px' }}>
@@ -791,10 +900,7 @@ export default function App() {
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Obra</label>
               <select value={formCarga.Obra} onChange={e => setFormCarga({...formCarga, Obra: e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
-                <option value="RN40">RN40</option>
-                <option value="CANTERA">CANTERA</option>
-                <option value="PLANTA ÁRIDOS">PLANTA ÁRIDOS</option>
-                <option value="PLANTA ASFALTO">PLANTA ASFALTO</option>
+                {obrasSeleccionables.map(o => <option key={o} value={o}>{o}</option>)}
               </select>
             </div>
             <div>
@@ -818,7 +924,7 @@ export default function App() {
       )}
       {pestana === 'equipos' && (
         <div style={{ maxWidth: '950px', margin: '0 auto' }}>
-          {esAdmin && (
+          {(esAdmin || rol === 'logistica') && (
             <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
               <h2 style={{ fontSize: '18px', color: '#7ea4e8', marginBottom: '15px' }}>+ Agregar Nuevo Equipo / Vehículo</h2>
               <form onSubmit={handleGuardarEquipo} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
@@ -856,14 +962,11 @@ export default function App() {
                       <select 
                         value={eq.obra_predeterminada || 'RN40'} 
                         onChange={e => handleCambiarObraEquipo(eq.codigo, e.target.value)}
-                        disabled={!esAdmin}
+                        disabled={!(esAdmin || rol === 'logistica')}
                         style={{ padding: '5px 8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}
                       >
-                        <option value="RN40">RN40</option>
-                        <option value="CANTERA">CANTERA</option>
-                        <option value="PLANTA ÁRIDOS">PLANTA ÁRIDOS</option>
-                        <option value="PLANTA ASFALTO">PLANTA ASFALTO</option>
-                      </select>
+                        {obrasSeleccionables.map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
                     </td>
                   </tr>
                 ))}
@@ -910,7 +1013,7 @@ export default function App() {
       )}
       {pestana === 'mantenimiento' && (
         <div style={{ maxWidth: '950px', margin: '0 auto' }}>
-          {esAdmin && (
+          {puedeServices && (
             <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a', marginBottom: '25px' }}>
               <h2 style={{ fontSize: '18px', color: '#7ea4e8', marginBottom: '15px' }}>🛠️ Registrar Service Realizado</h2>
               <form onSubmit={handleRegistrarService} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
@@ -950,7 +1053,7 @@ export default function App() {
                       <td style={{ padding: '10px', fontWeight: 'bold' }}>{m.ultimoLectura} hs/km</td>
                       <td style={{ padding: '10px' }}>{m.ultimoServiceLectura} hs/km</td>
                       <td style={{ padding: '10px', fontWeight: 'bold' }}>{m.horasDesdeUltimoService.toFixed(0)} hs/km</td>
-                      <td style={{ padding: '10px' }}><input key={m.codigo + m.intervaloService} type="number" defaultValue={m.intervaloService} disabled={!esAdmin} onBlur={e => handleCambiarIntervalo(m.codigo, e.target.value)} style={{ width: '70px', padding: '5px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} /> hs/km</td>
+                      <td style={{ padding: '10px' }}><input key={m.codigo + m.intervaloService} type="number" defaultValue={m.intervaloService} disabled={!puedeServices} onBlur={e => handleCambiarIntervalo(m.codigo, e.target.value)} style={{ width: '70px', padding: '5px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} /> hs/km</td>
                       <td style={{ padding: '10px', minWidth: '190px' }}>
                         <div style={{ background: '#2b3133', borderRadius: '6px', height: '12px', overflow: 'hidden', border: '1px solid #505a5e' }}>
                           <div style={{ width: `${Math.min(m.pct * 100, 100)}%`, height: '100%', background: 'linear-gradient(90deg, #4ade80 0%, #facc15 60%, #f97316 85%, #ef4444 100%)', backgroundSize: `${100 / Math.max(Math.min(m.pct, 1), 0.01)}% 100%` }} />
@@ -996,7 +1099,38 @@ export default function App() {
           </div>
         </div>
       )}
-      {pestana === 'excel' && esAdmin && (
+      {pestana === 'obras' && puede('obras') && (
+        <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #3f62a8' }}>
+          <h2 style={{ fontSize: '18px', color: '#7ea4e8', marginBottom: '15px' }}>🏗️ Gestión de Obras</h2>
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
+            <input placeholder="Nombre de la nueva obra" value={nombreObraNueva} onChange={e => setNombreObraNueva(e.target.value)} style={{ padding: '9px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', minWidth: '220px' }} />
+            <button onClick={handleAgregarObra} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>+ Agregar obra</button>
+            <button onClick={() => exportarACSV(resumenObras.map(o => ({ Obra: o.nombre, Estado: o.activa ? 'Activa' : 'Fuera de obra', 'Equipos asignados': o.equiposAsignados, 'Litros consumidos': Math.round(o.litros * 10) / 10, 'Equipos que pasaron': o.equiposQuePasaron.join(', '), 'Choferes que pasaron': o.choferesQuePasaron.join(', ') })), 'historial_obras')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer' }}>📥 Exportar a Excel</button>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+              <thead><tr style={{ borderBottom: '1px solid #3f62a8', color: '#b4bcc0', backgroundColor: '#2b3133' }}>
+                <th style={{ padding: '10px' }}>Obra</th><th style={{ padding: '10px' }}>Estado</th><th style={{ padding: '10px' }}>Equipos asignados hoy</th><th style={{ padding: '10px' }}>Litros</th><th style={{ padding: '10px' }}>Equipos que pasaron</th><th style={{ padding: '10px' }}>Choferes que pasaron</th><th style={{ padding: '10px' }}></th>
+              </tr></thead>
+              <tbody>
+                {resumenObras.map(o => (
+                  <tr key={o.id} style={{ borderBottom: '1px solid #454e51', opacity: o.activa ? 1 : 0.6 }}>
+                    <td style={{ padding: '10px', fontWeight: 'bold', color: '#7ea4e8' }}>{o.nombre}</td>
+                    <td style={{ padding: '10px' }}>{o.activa ? '🟢 Activa' : '⚪ Fuera de obra'}</td>
+                    <td style={{ padding: '10px' }}>{o.equiposAsignados}</td>
+                    <td style={{ padding: '10px' }}>{o.litros.toFixed(0)} L</td>
+                    <td style={{ padding: '10px', maxWidth: '240px', fontSize: '12px' }}>{o.equiposQuePasaron.join(', ') || '-'}</td>
+                    <td style={{ padding: '10px', maxWidth: '240px', fontSize: '12px' }}>{o.choferesQuePasaron.join(', ') || '-'}</td>
+                    <td style={{ padding: '10px' }}>{esAdmin && <button onClick={() => handleToggleObra(o)} style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '4px 10px' }}>{o.activa ? 'Dar de baja' : 'Reactivar'}</button>}</td>
+                  </tr>
+                ))}
+                {resumenObras.length === 0 && <tr><td colSpan="7" style={{ padding: '25px', textAlign: 'center', color: '#b4bcc0' }}>Todavía no hay obras. Ejecutá etapa2_A_usuarios_y_obras.sql en Supabase.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {pestana === 'excel' && puede('excel') && (
         <div style={{ maxWidth: '600px', margin: '0 auto', backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
           <h2 style={{ fontSize: '18px', color: '#4da3e0', marginBottom: '10px' }}>Importar Planilla CSV</h2>
           <p style={{ fontSize: '13px', color: '#b4bcc0', marginBottom: '15px' }}>Subí tu archivo CSV exportado de Excel (delimitado por punto y coma):</p>
