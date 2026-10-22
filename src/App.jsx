@@ -167,6 +167,7 @@ export default function App() {
   const [subiendoExcel, setSubiendoExcel] = useState(false);
   const [excelMsg, setExcelMsg] = useState('');
   const [edit, setEdit] = useState(null);
+  const [lecturaCarga, setLecturaCarga] = useState('');
   const [reemplazarTodo, setReemplazarTodo] = useState(true);
   async function cargarRol(session) {
     if (!session) { setSesion(null); setRol(null); setRolesUsuario([]); setAuthListo(true); return; }
@@ -303,11 +304,21 @@ export default function App() {
       if (!indicados || (!esAjuste && indicados <= 0)) throw new Error(esAjuste ? 'Ingresá los litros del ajuste (positivo si sobra, negativo si falta).' : 'Ingresá los litros indicados por el surtidor.');
       if (esAjuste && !tanques.some(t => t.nombre === formCarga.Origen)) throw new Error('Para un ajuste elegí una cisterna en "Origen / Cisterna".');
       if (tipo === 'Consumo' && !formCarga.Equipo) throw new Error('Elegí el equipo que recibe el combustible.');
+      let lectura = null, anterior = null;
+      if (tipo === 'Consumo') {
+        lectura = aNum(lecturaCarga);
+        if (lectura === null || lectura < 0) throw new Error('Ingresá el horómetro o los km actuales del equipo (si no tiene lectura, escribí 0).');
+        anterior = ultimaLecturaDe(formCarga.Equipo);
+        if (lectura > 0 && anterior && lectura < anterior && !window.confirm(`La lectura ${lectura} es menor que la última registrada (${anterior}). ¿Guardar igual?`)) return;
+      }
       const destino = tipo === 'Consumo' ? formCarga.Equipo
         : (tipo === 'Transferencia' ? 'Cisterna Camión'
         : (formCarga.Origen === 'Dafre (chiringuito)' ? 'Cisterna Camión' : 'Cisterna Principal (PPL)'));
       const tanqueOrigen = tanques.find(t => t.nombre === formCarga.Origen);
       const factor = tanqueOrigen && tanqueOrigen.factor_calibracion ? parseFloat(tanqueOrigen.factor_calibracion) : 1;
+      const colLec = esCamionEq(formCarga.Equipo) ? 'Kilometros' : 'Orometro';
+      const litrosReales = Math.round(indicados * factor * 10) / 10;
+      const rend = lectura > 0 && anterior > 0 && lectura > anterior ? Math.round(litrosReales / (lectura - anterior) * 10000) / 10000 : null;
       const registro = {
         ...formCarga,
         "Destino / Equipo": destino,
@@ -315,14 +326,17 @@ export default function App() {
         "Litros Indicados": indicados,
         "Factor Calibracion": factor,
         "Litros Reales": Math.round(indicados * factor * 10) / 10,
-        Orometro: numTxt(formCarga.Orometro),
-        Kilometros: numTxt(formCarga.Kilometros),
+        Orometro: tipo === 'Consumo' && colLec === 'Orometro' && lectura > 0 ? String(lectura) : '',
+        Kilometros: tipo === 'Consumo' && colLec === 'Kilometros' && lectura > 0 ? String(lectura) : '',
+        "HM/KM Anterior": tipo === 'Consumo' && lectura > 0 && anterior > 0 ? String(anterior) : '',
+        "Rendimiento (L/h o L/km)": rend !== null ? String(rend) : '',
         ...(tipo !== 'Consumo' ? { Chofer: '', Obra: '' } : {})
       };
       const registroAjuste = esAjuste ? { ...formCarga, "Tipo Movimiento": 'Ajuste de Stock', Origen: indicados < 0 ? formCarga.Origen : '', "Destino / Equipo": indicados > 0 ? formCarga.Origen : '', Equipo: '', Chofer: '', Obra: '', "Tipo Combustible": '', "Litros Indicados": indicados, "Factor Calibracion": 1, "Litros Reales": Math.abs(indicados), Orometro: '', Kilometros: '' } : null;
       const { error } = await supabase.from('cargas_diarias').insert([esAjuste ? registroAjuste : registro]);
       if (error) throw error;
       alert('¡Carga registrada con éxito!');
+      setLecturaCarga('');
       setFormCarga({
         Fecha: new Date().toISOString().split('T')[0],
         "Tipo Movimiento": 'Consumo',
@@ -393,7 +407,12 @@ export default function App() {
       const f = parseFloat(edit['Factor Calibracion']) || 1;
       const cambios = { Fecha: edit.Fecha, Equipo: edit.Equipo || '', Chofer: edit.Chofer || '', Obra: edit.Obra || '', Observaciones: edit.Observaciones || '', 'Litros Reales': reales };
       if (edit['Tipo Movimiento'] !== 'Ajuste de Stock') cambios['Litros Indicados'] = Math.round(reales / f * 10) / 10;
-      if (edit['Tipo Movimiento'] === 'Consumo') cambios['Destino / Equipo'] = edit.Equipo || '';
+      if (edit['Tipo Movimiento'] === 'Consumo') {
+        cambios['Destino / Equipo'] = edit.Equipo || '';
+        const l = aNum(edit.lectura);
+        cambios.Orometro = ''; cambios.Kilometros = '';
+        if (l > 0) cambios[esCamionEq(edit.Equipo) ? 'Kilometros' : 'Orometro'] = String(l);
+      }
       const { error } = await supabase.from('cargas_diarias').update(cambios).eq('id', edit.id);
       if (error) throw error;
       setEdit(null);
@@ -635,6 +654,7 @@ export default function App() {
   const maxGen = generadoresOrdenado.length > 0 ? generadoresOrdenado[0][1] : 1;
   const rendimientoOrdenado = Object.entries(rendimientoPorVehiculoDash).sort((a, b) => b[1] - a[1]);
   const maxRendimiento = rendimientoOrdenado.length > 0 ? rendimientoOrdenado[0][1] : 1;
+  const esCamionEq = (cod) => { const e = equipos.find(x => x.codigo === cod); return /cami|batea/i.test((e && e.tipo) || ''); };
   const ultimaLecturaDe = (cod) => {
     const v = todasLasCargas.filter(c => c.Equipo === cod).map(c => parseFloat(c.Orometro || c.Kilometros)).filter(n => n > 0);
     return v.length ? Math.max(...v) : null;
@@ -945,6 +965,7 @@ export default function App() {
                 <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Chofer<input list="dl-choferes" value={edit.Chofer || ''} onChange={e => setEdit({ ...edit, Chofer: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
                 <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Obra<input list="dl-obras" value={edit.Obra || ''} onChange={e => setEdit({ ...edit, Obra: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
                 <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Litros reales<input type="number" step="any" value={edit['Litros Reales'] ?? ''} onChange={e => setEdit({ ...edit, 'Litros Reales': e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Horómetro / km<input type="number" step="any" value={edit.lectura ?? ''} onChange={e => setEdit({ ...edit, lectura: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
                 <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Observaciones<input value={edit.Observaciones || ''} onChange={e => setEdit({ ...edit, Observaciones: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }} /></label>
               </div>
               <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
@@ -979,7 +1000,7 @@ export default function App() {
                       <td style={{ padding: '12px' }}>{c.Chofer || '-'}</td>
                       <td style={{ padding: '12px', fontWeight: 'bold', color: '#7ea4e8' }}>{c['Tipo Movimiento'] === 'Ajuste de Stock' ? (c['Destino / Equipo'] ? '+' : '−') : ''}{c['Litros Reales'] || c['Litros Indicados'] || 0} L</td>
                       <td style={{ padding: '12px' }}>{c.Obra || '-'}</td>
-                      {puedeEditarHist && <td style={{ padding: '12px' }}><button onClick={() => setEdit({ ...c })} title="Editar" style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px' }}>✏️</button></td>}
+                      {puedeEditarHist && <td style={{ padding: '12px' }}><button onClick={() => setEdit({ ...c, lectura: c.Orometro || c.Kilometros || '' })} title="Editar" style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px' }}>✏️</button></td>}
                     </tr>
                   ))
                 ) : (
@@ -1057,6 +1078,13 @@ export default function App() {
               {formCarga["Tipo Movimiento"] === 'Ajuste' && (() => { const t = tanques.find(x => x.nombre === formCarga.Origen); return <p style={{ fontSize: '12px', color: '#7ea4e8', margin: '4px 0 0' }}>{t ? `El sistema marca ${t.stock_real.toFixed(1)} L en esta cisterna. Si la varilla marca otro valor, cargá la diferencia.` : 'Elegí una cisterna en "Origen / Cisterna".'}</p>; })()}
               <input type="number" step="any" placeholder="Ej: 150" value={formCarga["Litros Indicados"]} onChange={e => setFormCarga({...formCarga, "Litros Indicados": e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }} />
             </div>
+            {formCarga["Tipo Movimiento"] === 'Consumo' && (
+              <div>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>{esCamionEq(formCarga.Equipo) ? 'Kilómetros actuales del vehículo' : 'Horómetro actual (horas)'}</label>
+                <p style={{ fontSize: '12px', color: '#7ea4e8', margin: '4px 0 0' }}>{formCarga.Equipo ? (ultimaLecturaDe(formCarga.Equipo) ? `Última lectura registrada: ${ultimaLecturaDe(formCarga.Equipo)}. Si no tiene tablero o está roto, escribí 0.` : 'Todavía no hay lecturas de este equipo. Si no tiene, escribí 0.') : 'Elegí primero el equipo. Si no tiene lectura, escribí 0.'}</p>
+                <input type="number" step="any" required placeholder="Ej: 10450" value={lecturaCarga} onChange={e => setLecturaCarga(e.target.value)} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', boxSizing: 'border-box' }} />
+              </div>
+            )}
             <div style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
               <button type="submit" style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '12px 20px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', width: '100%' }}>Guardar Carga</button>
             </div>
