@@ -400,7 +400,7 @@ export default function App() {
         : (formCarga.Origen === 'Dafre (chiringuito)' ? 'Cisterna Camión' : 'Cisterna Principal (PPL)'));
       const tanqueOrigen = tanques.find(t => t.nombre === formCarga.Origen);
       const factor = tanqueOrigen && tanqueOrigen.factor_calibracion ? parseFloat(tanqueOrigen.factor_calibracion) : 1;
-      const colLec = esCamionEq(formCarga.Equipo) ? 'Kilometros' : 'Orometro';
+      const colLec = usaKm(formCarga.Equipo) ? 'Kilometros' : 'Orometro';
       const litrosReales = Math.round(indicados * factor * 10) / 10;
       const rend = lectura > 0 && anterior > 0 && lectura > anterior ? Math.round(litrosReales / (lectura - anterior) * 10000) / 10000 : null;
       const registro = {
@@ -504,7 +504,7 @@ export default function App() {
         cambios['Destino / Equipo'] = edit.Equipo || '';
         const l = aNum(edit.lectura);
         cambios.Orometro = ''; cambios.Kilometros = '';
-        if (l > 0) cambios[esCamionEq(edit.Equipo) ? 'Kilometros' : 'Orometro'] = String(l);
+        if (l > 0) cambios[usaKm(edit.Equipo) ? 'Kilometros' : 'Orometro'] = String(l);
       }
       const { error } = await supabase.from('cargas_diarias').update(cambios).eq('id', edit.id);
       if (error) throw error;
@@ -605,6 +605,13 @@ export default function App() {
     const uniq = (k) => [...new Set(cs.map(c => c[k]).filter(Boolean))];
     return { ...o, equiposAsignados: equipos.filter(e => e.obra_predeterminada === o.nombre).length, litros: cs.reduce((a, c) => a + (parseFloat(c['Litros Reales']) || 0), 0), equiposQuePasaron: uniq('Equipo'), choferesQuePasaron: uniq('Chofer') };
   });
+  const handleCambiarUnidad = async (codigo, valor) => {
+    setEquipos(prev => prev.map(e => e.codigo === codigo ? { ...e, unidad_lectura: valor } : e));
+    try {
+      const { error } = await supabase.from('equipos').update({ unidad_lectura: valor }).eq('codigo', codigo);
+      if (error) throw error;
+    } catch (err) { alert('No se pudo guardar la unidad (¿ejecutaste etapa6_unidad_lectura.sql?): ' + err.message); }
+  };
   const handleCargarArchivo = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -747,7 +754,7 @@ export default function App() {
   const maxGen = generadoresOrdenado.length > 0 ? generadoresOrdenado[0][1] : 1;
   const rendimientoOrdenado = Object.entries(rendimientoPorVehiculoDash).sort((a, b) => b[1] - a[1]);
   const maxRendimiento = rendimientoOrdenado.length > 0 ? rendimientoOrdenado[0][1] : 1;
-  const esCamionEq = (cod) => { const e = equipos.find(x => x.codigo === cod); return /cami|batea/i.test((e && e.tipo) || ''); };
+  const usaKm = (cod) => { const e = equipos.find(x => x.codigo === cod); if (!e) return false; if (e.unidad_lectura) return e.unidad_lectura === 'km'; return /camioneta/i.test(e.tipo || ''); };
   const ultimaLecturaDe = (cod) => {
     const v = todasLasCargas.filter(c => c.Equipo === cod).map(c => parseFloat(c.Orometro || c.Kilometros)).filter(n => n > 0);
     if (refOffline.lec && refOffline.lec[cod] > 0) v.push(refOffline.lec[cod]);
@@ -1188,7 +1195,7 @@ export default function App() {
             </div>
             {formCarga["Tipo Movimiento"] === 'Consumo' && (
               <div>
-                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>{esCamionEq(formCarga.Equipo) ? 'Kilómetros actuales del vehículo' : 'Horómetro actual (horas)'}</label>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>{usaKm(formCarga.Equipo) ? 'Kilómetros actuales del vehículo' : 'Horómetro actual (horas)'}</label>
                 <p style={{ fontSize: '12px', color: '#7ea4e8', margin: '4px 0 0' }}>{formCarga.Equipo ? (ultimaLecturaDe(formCarga.Equipo) ? `Última lectura registrada: ${ultimaLecturaDe(formCarga.Equipo)}. Si no tiene tablero o está roto, escribí 0.` : 'Todavía no hay lecturas de este equipo. Si no tiene, escribí 0.') : 'Elegí primero el equipo. Si no tiene lectura, escribí 0.'}</p>
                 <input type="number" step="any" required placeholder="Ej: 10450" value={lecturaCarga} onChange={e => setLecturaCarga(e.target.value)} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', boxSizing: 'border-box' }} />
               </div>
@@ -1226,6 +1233,7 @@ export default function App() {
                   <th style={{ padding: '10px' }}>Código</th>
                   <th style={{ padding: '10px' }}>Descripción</th>
                   <th style={{ padding: '10px' }}>Tipo</th>
+                  <th style={{ padding: '10px' }}>Se mide en</th>
                   <th style={{ padding: '10px' }}>Obra Actual / Asignar</th>
                 </tr>
               </thead>
@@ -1235,6 +1243,12 @@ export default function App() {
                     <td style={{ padding: '10px', fontWeight: 'bold', color: '#7ea4e8' }}>{eq.codigo}</td>
                     <td style={{ padding: '10px' }}>{eq.descripcion || '-'}</td>
                     <td style={{ padding: '10px' }}>{eq.tipo || 'Máquina'}</td>
+                    <td style={{ padding: '10px' }}>
+                      <select value={usaKm(eq.codigo) ? 'km' : 'horas'} onChange={e => handleCambiarUnidad(eq.codigo, e.target.value)} disabled={!(esAdmin || tiene('logistica'))} style={{ padding: '5px 8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
+                        <option value="horas">Horas</option>
+                        <option value="km">Kilómetros</option>
+                      </select>
+                    </td>
                     <td style={{ padding: '10px' }}>
                       <select 
                         value={eq.obra_predeterminada || 'RN40'} 
