@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = 'https://vlllvmklgokwwuvnasuo.supabase.co';
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsbGx2bWtsZ29rd3d1dm5hc3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1NTgxMzgsImV4cCI6MjEwNzEzNDEzOH0.Q5rP9pu0bW-1F16mBsbn69t95TzeB437PmWHPEp_Mzc';
@@ -41,6 +41,12 @@ function aNum(v) {
 }
 function numTxt(v) { const n = aNum(v); return n === null ? '' : String(n); }
 
+const CLAVE_COLA = 'dafre_cola_cargas', CLAVE_REF = 'dafre_ref', CLAVE_PERFIL = 'dafre_perfil';
+const leerLS = (k, def) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } };
+const guardarLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
+const leerCola = () => leerLS(CLAVE_COLA, []);
+const esErrorDeRed = (e) => !!e && (e.offline || /fetch|network|load failed|failed to|timeout/i.test(String(e.message || e)));
+const nuevoUid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2));
 const PERMISOS = {
   admin: ['dashboard', 'historial', 'nueva_carga', 'equipos', 'choferes', 'mantenimiento', 'obras', 'flota', 'excel', 'usuarios'],
   gerencia: ['dashboard'],
@@ -135,7 +141,7 @@ export default function App() {
   const [formUsuario, setFormUsuario] = useState({ email: '', nombre: '', rol: 'gerencia' });
   const tiene = (...r) => r.some(x => rolesUsuario.includes(x));
   const esAdmin = tiene('admin');
-  const puede = (t) => rolesUsuario.some(r => (PERMISOS[r] || []).includes(t));
+  const puede = (t) => (!modoOffline || t === 'nueva_carga') && rolesUsuario.some(r => (PERMISOS[r] || []).includes(t));
   const puedeEditarHist = tiene('admin') || tiene('administrativo');
   const puedeServices = tiene('admin') || tiene('mantenimiento');
   const [filtroAnio, setFiltroAnio] = useState('');
@@ -168,14 +174,87 @@ export default function App() {
   const [excelMsg, setExcelMsg] = useState('');
   const [edit, setEdit] = useState(null);
   const [lecturaCarga, setLecturaCarga] = useState('');
+  const [modoOffline, setModoOffline] = useState(false);
+  const [enLinea, setEnLinea] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
+  const [cola, setCola] = useState(() => leerCola());
+  const [msgSync, setMsgSync] = useState('');
+  const [refOffline, setRefOffline] = useState({});
+  const sincronizandoRef = useRef(false);
   const [reemplazarTodo, setReemplazarTodo] = useState(true);
+  const guardarCola = (c) => { guardarLS(CLAVE_COLA, c); setCola(c); };
+  const encolarCarga = (registro) => {
+    const nueva = [...leerCola(), { uid: registro.uid_offline, ts: Date.now(), registro }];
+    if (!guardarLS(CLAVE_COLA, nueva)) throw new Error('No hay espacio para guardar la carga en la tablet. Sincronizá o descargá los pendientes.');
+    setCola(nueva);
+  };
+  async function sincronizarCola() {
+    if (sincronizandoRef.current || !supabase || !navigator.onLine) return;
+    const pendientes = leerCola();
+    if (!pendientes.length) return;
+    sincronizandoRef.current = true;
+    setMsgSync(`Subiendo ${pendientes.length} carga(s) guardadas en la tablet...`);
+    try {
+      for (let i = 0; i < pendientes.length; i += 50) {
+        const lote = pendientes.slice(i, i + 50);
+        const filas = lote.map(x => ({ ...x.registro, uid_offline: x.uid }));
+        const { error } = await supabase.from('cargas_diarias').upsert(filas, { onConflict: 'uid_offline', ignoreDuplicates: true });
+        if (error) throw error;
+        const subidos = new Set(lote.map(x => x.uid));
+        guardarCola(leerCola().filter(x => !subidos.has(x.uid)));
+      }
+      setMsgSync(`✅ Se subieron ${pendientes.length} carga(s) guardadas en la tablet.`);
+      fetchDatos();
+    } catch (err) {
+      setMsgSync('⚠️ Todavía no se pudo subir: ' + (err.message || 'error de conexión') + '. Se reintenta solo.');
+    }
+    sincronizandoRef.current = false;
+  }
+  function entrarOffline(perfil) {
+    const ref = leerLS(CLAVE_REF, {});
+    if (ref.equipos) setEquipos(ref.equipos);
+    if (ref.choferes) setChoferes(ref.choferes);
+    if (ref.obrasLista) setObrasLista(ref.obrasLista);
+    if (ref.tanques) setTanques(ref.tanques);
+    setRefOffline(ref);
+    setModoOffline(true); setSesion({ user: { email: perfil.email }, offline: true });
+    setRol(perfil.rol); setRolesUsuario(perfil.roles); setPestana('nueva_carga'); setAuthListo(true);
+  }
+  useEffect(() => {
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    if (!document.querySelector('link[rel="manifest"]')) { const l = document.createElement('link'); l.rel = 'manifest'; l.href = '/manifest.webmanifest'; document.head.appendChild(l); }
+    const on = () => setEnLinea(true), off = () => setEnLinea(false);
+    window.addEventListener('online', on); window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+  }, []);
+  useEffect(() => {
+    if (!enLinea || !modoOffline || !supabase) return;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      setModoOffline(false);
+      if (data.session) await cargarRol(data.session);
+      else { setSesion(null); setRol(null); setRolesUsuario([]); setLoginMsg('Volvió la conexión. Ingresá de nuevo para subir las cargas guardadas.'); }
+    })();
+  }, [enLinea, modoOffline]);
+  useEffect(() => {
+    if (!sesion || modoOffline || !enLinea) return;
+    sincronizarCola();
+    const t = setInterval(sincronizarCola, 60000);
+    return () => clearInterval(t);
+  }, [sesion, modoOffline, enLinea]);
+  useEffect(() => {
+    if (modoOffline || !equipos.length) return;
+    const lec = {};
+    todasLasCargas.forEach(c => { const l = parseFloat(c.Orometro || c.Kilometros); if (c.Equipo && l > 0 && (!lec[c.Equipo] || l > lec[c.Equipo])) lec[c.Equipo] = l; });
+    guardarLS(CLAVE_REF, { equipos, choferes, obrasLista, tanques, lec, ts: Date.now() });
+  }, [equipos, choferes, obrasLista, tanques, todasLasCargas, modoOffline]);
   async function cargarRol(session) {
     if (!session) { setSesion(null); setRol(null); setRolesUsuario([]); setAuthListo(true); return; }
     const { data } = await supabase.from('usuarios_app').select('*').eq('email', (session.user.email || '').toLowerCase()).maybeSingle();
     const lista = data && data.activo ? [data.rol, ...(data.roles_extra || [])].filter(r => PERMISOS[r]) : [];
     if (lista.length > 0) {
       const permitidas = [...new Set(lista.flatMap(r => PERMISOS[r]))];
-      setSesion(session); setRol(data.rol); setRolesUsuario(lista); setPestana(permitidas[0]); setLoginMsg('');
+      setSesion(session); setRol(data.rol); setRolesUsuario(lista); setPestana(permitidas[0]); setLoginMsg(''); setModoOffline(false);
+      guardarLS(CLAVE_PERFIL, { email: session.user.email, rol: data.rol, roles: lista });
       fetchDatos();
     } else {
       await supabase.auth.signOut();
@@ -193,7 +272,12 @@ export default function App() {
   };
   useEffect(() => {
     if (!supabase) { setAuthListo(true); return; }
-    supabase.auth.getSession().then(({ data }) => cargarRol(data.session));
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) return cargarRol(data.session);
+      const perfil = leerLS(CLAVE_PERFIL, null);
+      if (!navigator.onLine && perfil && (perfil.roles || []).some(r => (PERMISOS[r] || []).includes('nueva_carga'))) { entrarOffline(perfil); return; }
+      return cargarRol(null);
+    }).catch(() => { const perfil = leerLS(CLAVE_PERFIL, null); if (perfil) entrarOffline(perfil); else setAuthListo(true); });
     const { data: sub } = supabase.auth.onAuthStateChange((evento) => { if (evento === 'SIGNED_OUT') cargarRol(null); });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -333,9 +417,19 @@ export default function App() {
         ...(tipo !== 'Consumo' ? { Chofer: '', Obra: '' } : {})
       };
       const registroAjuste = esAjuste ? { ...formCarga, "Tipo Movimiento": 'Ajuste de Stock', Origen: indicados < 0 ? formCarga.Origen : '', "Destino / Equipo": indicados > 0 ? formCarga.Origen : '', Equipo: '', Chofer: '', Obra: '', "Tipo Combustible": '', "Litros Indicados": indicados, "Factor Calibracion": 1, "Litros Reales": Math.abs(indicados), Orometro: '', Kilometros: '' } : null;
-      const { error } = await supabase.from('cargas_diarias').insert([esAjuste ? registroAjuste : registro]);
-      if (error) throw error;
-      alert('¡Carga registrada con éxito!');
+      const registroFinal = { ...(esAjuste ? registroAjuste : registro), uid_offline: nuevoUid() };
+      let error = null;
+      if (modoOffline || !navigator.onLine) error = { offline: true };
+      else {
+        try {
+          ({ error } = await supabase.from('cargas_diarias').insert([registroFinal]));
+          if (error && /uid_offline/.test(error.message || '')) { const { uid_offline, ...sinUid } = registroFinal; ({ error } = await supabase.from('cargas_diarias').insert([sinUid])); }
+        } catch (err) { error = err; }
+      }
+      const enCola = !!error && esErrorDeRed(error);
+      if (error && !enCola) throw error;
+      if (enCola) { encolarCarga(registroFinal); alert('📴 Sin conexión: la carga quedó guardada en esta tablet y se subirá sola cuando haya internet.'); }
+      else alert('¡Carga registrada con éxito!');
       setLecturaCarga('');
       setFormCarga({
         Fecha: new Date().toISOString().split('T')[0],
@@ -350,8 +444,7 @@ export default function App() {
         Kilometros: '',
         Observaciones: ''
       });
-      setPestana('dashboard');
-      fetchDatos();
+      if (!enCola) { setPestana(puede('dashboard') ? 'dashboard' : 'nueva_carga'); fetchDatos(); }
     } catch (err) {
       alert('Error al guardar: ' + err.message);
     }
@@ -657,6 +750,8 @@ export default function App() {
   const esCamionEq = (cod) => { const e = equipos.find(x => x.codigo === cod); return /cami|batea/i.test((e && e.tipo) || ''); };
   const ultimaLecturaDe = (cod) => {
     const v = todasLasCargas.filter(c => c.Equipo === cod).map(c => parseFloat(c.Orometro || c.Kilometros)).filter(n => n > 0);
+    if (refOffline.lec && refOffline.lec[cod] > 0) v.push(refOffline.lec[cod]);
+    cola.forEach(x => { const l = parseFloat(x.registro.Orometro || x.registro.Kilometros); if (x.registro.Equipo === cod && l > 0) v.push(l); });
     return v.length ? Math.max(...v) : null;
   };
   const datosEstadia = (a) => {
@@ -734,9 +829,9 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <span style={{ fontSize: '12px', color: '#4da3e0', background: '#232829', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e3a8a' }}>
-            {rolesUsuario.map(r => ETIQUETA_ROL[r]).join(' + ')} · {sesion && sesion.user.email}
+            {rolesUsuario.map(r => ETIQUETA_ROL[r]).join(' + ')} · {sesion && sesion.user.email}{!enLinea ? ' · 📴 sin conexión' : ''}{cola.length > 0 ? ` · ⏳ ${cola.length} sin subir` : ''}
           </span>
-          <button onClick={() => supabase.auth.signOut()} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}>
+          <button onClick={async () => { try { localStorage.removeItem(CLAVE_PERFIL); } catch (e) {} setModoOffline(false); try { await supabase.auth.signOut(); } catch (e) {} setSesion(null); setRol(null); setRolesUsuario([]); }} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}>
             Salir
           </button>
         </div>
@@ -1016,6 +1111,19 @@ export default function App() {
       {pestana === 'nueva_carga' && puede('nueva_carga') && (
         <div style={{ maxWidth: '650px', margin: '0 auto', backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
           <h2 style={{ fontSize: '18px', marginBottom: '20px', color: '#7ea4e8' }}>+ Registrar Nueva Carga Manual</h2>
+          {(!enLinea || cola.length > 0 || msgSync) && (
+            <div style={{ background: enLinea ? '#2b3133' : '#7c2d12', border: '1px solid #f97316', borderRadius: '8px', padding: '10px 12px', marginBottom: '15px', fontSize: '13px', color: '#fff' }}>
+              {!enLinea && <p style={{ margin: '0 0 6px' }}>📴 Sin conexión. Podés seguir cargando: se guardan en esta tablet.</p>}
+              {cola.length > 0 && <p style={{ margin: '0 0 6px' }}>⏳ {cola.length} carga(s) pendientes de subir.</p>}
+              {msgSync && <p style={{ margin: '0 0 6px' }}>{msgSync}</p>}
+              {cola.length > 0 && (
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {enLinea && !modoOffline && <button type="button" onClick={sincronizarCola} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '6px 12px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Sincronizar ahora</button>}
+                  <button type="button" onClick={() => exportarACSV(cola.map(x => x.registro), 'cargas_pendientes')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>📥 Descargar pendientes</button>
+                </div>
+              )}
+            </div>
+          )}
           <form onSubmit={handleGuardarCargaManual} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '15px' }}>
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Fecha</label>
