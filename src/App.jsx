@@ -47,16 +47,34 @@ const guardarLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); 
 const leerCola = () => leerLS(CLAVE_COLA, []);
 const esErrorDeRed = (e) => !!e && (e.offline || /fetch|network|load failed|failed to|timeout/i.test(String(e.message || e)));
 const nuevoUid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2));
+// SEG-START: arma una línea de tiempo cada vez que cambia el valor (obra, chofer o equipo)
+const segmentos = (lista, clave, extra) => {
+  const out = [];
+  lista.forEach(c => {
+    const k = clave(c) || '(sin dato)';
+    const f = (c.Fecha || '').slice(0, 10);
+    const lit = parseFloat(c['Litros Reales']) || 0;
+    const lec = parseFloat(c.Orometro || c.Kilometros) || 0;
+    const ex = extra ? extra(c) : '';
+    let u = out[out.length - 1];
+    if (!u || u.valor !== k) { u = { valor: k, desde: f, hasta: f, cargas: 0, litros: 0, lecMin: 0, lecMax: 0, otros: new Set() }; out.push(u); }
+    u.hasta = f; u.cargas++; u.litros += lit;
+    if (lec > 0) { u.lecMin = u.lecMin ? Math.min(u.lecMin, lec) : lec; u.lecMax = Math.max(u.lecMax, lec); }
+    if (ex) u.otros.add(ex);
+  });
+  return out;
+};
+// SEG-END
 const PERMISOS = {
-  admin: ['dashboard', 'historial', 'nueva_carga', 'equipos', 'choferes', 'mantenimiento', 'obras', 'flota', 'excel', 'usuarios'],
+  admin: ['dashboard', 'historial', 'nueva_carga', 'equipos', 'choferes', 'mantenimiento', 'obras', 'flota', 'excel', 'usuarios', 'historiales'],
   gerencia: ['dashboard'],
-  logistica: ['dashboard', 'equipos', 'obras', 'flota'],
+  logistica: ['dashboard', 'equipos', 'obras', 'flota', 'historiales'],
   mantenimiento: ['mantenimiento', 'flota'],
   playero: ['nueva_carga'],
-  administrativo: ['historial', 'excel']
+  administrativo: ['historial', 'excel', 'historiales']
 };
 const ROLES = Object.keys(PERMISOS);
-const TAB_NOMBRE = { dashboard: 'Dashboard', historial: 'Historial', nueva_carga: 'Nueva Carga', equipos: 'Equipos', choferes: 'Choferes', mantenimiento: 'Mantenimiento', obras: 'Obras', flota: 'Flota e Historial', excel: 'Excel/CSV', usuarios: 'Usuarios' };
+const TAB_NOMBRE = { dashboard: 'Dashboard', historial: 'Historial', nueva_carga: 'Nueva Carga', equipos: 'Equipos', choferes: 'Choferes', mantenimiento: 'Mantenimiento', obras: 'Obras', flota: 'Flota e Historial', excel: 'Excel/CSV', usuarios: 'Usuarios', historiales: 'Historiales' };
 const ESTADOS_FLOTA = ['En obra', 'Standby', 'Fuera de obra', 'En taller'];
 const ESTADO_COLOR = { 'En obra': '#4ade80', 'Standby': '#facc15', 'Fuera de obra': '#b4bcc0', 'En taller': '#f87171' };
 const hoyISO = () => new Date().toISOString().split('T')[0];
@@ -174,6 +192,9 @@ export default function App() {
   const [excelMsg, setExcelMsg] = useState('');
   const [edit, setEdit] = useState(null);
   const [lecturaCarga, setLecturaCarga] = useState('');
+  const [histModo, setHistModo] = useState('equipo');
+  const [histSel, setHistSel] = useState('');
+  const [editChofer, setEditChofer] = useState(null);
   const [modoOffline, setModoOffline] = useState(false);
   const [enLinea, setEnLinea] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
   const [cola, setCola] = useState(() => leerCola());
@@ -220,6 +241,7 @@ export default function App() {
     setRol(perfil.rol); setRolesUsuario(perfil.roles); setPestana('nueva_carga'); setAuthListo(true);
   }
   useEffect(() => {
+    document.title = 'DA FRÉ - Gestión de Vehículos';
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
     if (!document.querySelector('link[rel="manifest"]')) { const l = document.createElement('link'); l.rel = 'manifest'; l.href = '/manifest.webmanifest'; document.head.appendChild(l); }
     const on = () => setEnLinea(true), off = () => setEnLinea(false);
@@ -612,6 +634,28 @@ export default function App() {
       if (error) throw error;
     } catch (err) { alert('No se pudo guardar la unidad (¿ejecutaste etapa6_unidad_lectura.sql?): ' + err.message); }
   };
+  const handleGuardarFactor = async (t, valor) => {
+    const n = aNum(valor);
+    if (!n || n < 0.5 || n > 1.5) { alert('El factor debe estar entre 0,5 y 1,5 (por ejemplo 0,9852).'); return; }
+    if (!window.confirm(`Cisterna "${t.nombre}": el factor pasa de ${t.factor_calibracion ?? 1} a ${n}. Se aplica a las cargas nuevas; las anteriores no cambian. ¿Confirmar?`)) return;
+    const { error } = await supabase.from('tanques').update({ factor_calibracion: n }).eq('id', t.id);
+    if (error) { alert('Error al guardar el factor: ' + error.message); return; }
+    setTanques(prev => prev.map(x => x.id === t.id ? { ...x, factor_calibracion: n } : x));
+    alert('Factor actualizado.');
+  };
+  const handleActualizarChofer = async () => {
+    const orig = choferes.find(c => c.id === editChofer.id);
+    const nombre = (editChofer.nombre || '').trim();
+    if (!nombre) { alert('El nombre no puede quedar vacío.'); return; }
+    const { error } = await supabase.from('choferes').update({ nombre, equipo_habitual: editChofer.equipo_habitual || '' }).eq('id', editChofer.id);
+    if (error) { alert('Error al guardar: ' + error.message); return; }
+    if (orig && orig.nombre !== nombre && choferes.filter(c => c.nombre === orig.nombre).length === 1 && window.confirm(`¿Cambiar también el nombre en las cargas anteriores ("${orig.nombre}" → "${nombre}")?`)) {
+      const r = await supabase.from('cargas_diarias').update({ Chofer: nombre }).eq('Chofer', orig.nombre);
+      if (r.error) alert('No se pudo actualizar el nombre en las cargas: ' + r.error.message);
+    }
+    setEditChofer(null);
+    await fetchDatos();
+  };
   const handleCargarArchivo = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -807,13 +851,36 @@ export default function App() {
     if (estFlota !== 'En obra') { estado = estFlota.toUpperCase(); colorEstado = ESTADO_COLOR[estFlota]; }
     return { ...eq, ultimoLectura, intervaloService, ultimoServiceLectura, horasDesdeUltimoService, pct, horasRestantes: Math.max(0, horasRestantes), estado, colorEstado };
   });
+  const histOpciones = histModo === 'equipo' ? equipos.map(x => ({ v: x.codigo, t: `${x.codigo} - ${x.descripcion}` }))
+    : histModo === 'chofer' ? [...new Set([...choferes.map(c => c.nombre), ...todasLasCargas.map(c => c.Chofer).filter(Boolean)])].sort().map(n => ({ v: n, t: n }))
+    : obrasDisponibles.map(o => ({ v: o, t: o }));
+  const histTablas = (() => {
+    if (!histSel) return [];
+    const campo = histModo === 'equipo' ? 'Equipo' : histModo === 'chofer' ? 'Chofer' : 'Obra';
+    const lista = todasLasCargas.filter(c => c[campo] === histSel && c.Fecha).sort((a, b) => a.Fecha.localeCompare(b.Fecha) || (a.id - b.id));
+    const filasSeg = (segs) => segs.map(g => [g.valor, g.desde, g.hasta, g.cargas, Math.round(g.litros * 10) / 10, g.lecMax > 0 ? `${g.lecMin} → ${g.lecMax} (${Math.round((g.lecMax - g.lecMin) * 10) / 10})` : '-', [...g.otros].join(', ')]);
+    const cols = (n, o) => [n, 'Desde', 'Hasta', 'Cargas', 'Litros', 'Horóm./km (uso)', o];
+    const tablas = [];
+    if (histModo === 'equipo') {
+      tablas.push({ titulo: 'Obras por las que pasó (según cargas)', cols: cols('Obra', 'Choferes'), filas: filasSeg(segmentos(lista, c => c.Obra, c => c.Chofer)) });
+      tablas.push({ titulo: 'Choferes que lo manejaron (según cargas)', cols: cols('Chofer', 'Obras'), filas: filasSeg(segmentos(lista, c => c.Chofer, c => c.Obra)) });
+    } else if (histModo === 'chofer') {
+      tablas.push({ titulo: 'Unidades que manejó (según cargas)', cols: cols('Equipo', 'Obras'), filas: filasSeg(segmentos(lista, c => c.Equipo, c => c.Obra)) });
+    } else {
+      const porEquipo = [...lista].sort((a, b) => (a.Equipo || '').localeCompare(b.Equipo || '') || a.Fecha.localeCompare(b.Fecha));
+      tablas.push({ titulo: 'Equipos que pasaron por la obra (según cargas)', cols: cols('Equipo', 'Choferes'), filas: filasSeg(segmentos(porEquipo, c => c.Equipo, c => c.Chofer)) });
+    }
+    const asig = asignaciones.filter(a => histModo === 'equipo' ? a.equipo === histSel : histModo === 'chofer' ? a.chofer === histSel : a.obra === histSel);
+    if (asig.length) tablas.push({ titulo: 'Cambios registrados en Flota e Historial', cols: ['Equipo', 'Estado', 'Obra', 'Chofer', 'Desde', 'Hasta', 'Horóm. entrada → salida'], filas: asig.map(a => [a.equipo, a.estado, a.obra || '-', a.chofer || '-', a.desde, a.hasta || 'Vigente', `${a.horometro_desde ?? '-'} → ${a.horometro_hasta ?? '-'}`]) });
+    return tablas;
+  })();
   if (!authListo) return <div style={{ minHeight: '100vh', background: '#2b3133', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>Cargando...</div>;
   if (!sesion) return (
     <div style={{ minHeight: '100vh', background: '#2b3133', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif', padding: '20px' }}>
       <form onSubmit={handleLogin} style={{ background: '#fff', borderRadius: '12px', padding: '30px', width: '100%', maxWidth: '360px', borderTop: '6px solid #3f62a8' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
           <div style={{ background: '#3f62a8', color: '#fff', fontWeight: 'bold', fontSize: '22px', padding: '6px 12px', borderRadius: '4px' }}>DA FRÉ</div>
-          <div style={{ color: '#373f42', fontSize: '13px' }}>Obras Civiles S.A.<br />Control de Combustible y Flota</div>
+          <div style={{ color: '#373f42', fontSize: '13px' }}>Obras Civiles S.A.<br />Gestión de Vehículos y Obras</div>
         </div>
         <input type="email" required placeholder="Correo electrónico" value={loginForm.email} onChange={e => setLoginForm({ ...loginForm, email: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #b4bcc0', boxSizing: 'border-box' }} />
         <input type="password" required placeholder="Contraseña" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '14px', borderRadius: '6px', border: '1px solid #b4bcc0', boxSizing: 'border-box' }} />
@@ -831,7 +898,7 @@ export default function App() {
           </div>
           <div>
             <h1 style={{ fontSize: '20px', fontWeight: 'bold', color: '#373f42', margin: 0 }}>Gestión de Vehículos</h1>
-            <p style={{ color: '#5f686c', fontSize: '12px', margin: '2px 0 0 0' }}>Obras Civiles S.A. — Control de Combustible y Flota</p>
+            <p style={{ color: '#5f686c', fontSize: '12px', margin: '2px 0 0 0' }}>Obras Civiles S.A. — Gestión de Vehículos y Obras</p>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -850,6 +917,7 @@ export default function App() {
         {puede('equipos') && <button onClick={() => setPestana('equipos')} style={{ background: pestana === 'equipos' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'equipos' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Equipos y Obras</button>}
         {puede('choferes') && <button onClick={() => setPestana('choferes')} style={{ background: pestana === 'choferes' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'choferes' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Choferes</button>}
         {puede('mantenimiento') && <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'mantenimiento' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Mantenimiento</button>}
+        {puede('historiales') && <button onClick={() => setPestana('historiales')} style={{ background: pestana === 'historiales' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>📚 Historiales</button>}
         {puede('usuarios') && <button onClick={() => setPestana('usuarios')} style={{ background: pestana === 'usuarios' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>👥 Usuarios</button>}
         {puede('flota') && <button onClick={() => setPestana('flota')} style={{ background: pestana === 'flota' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>🚛 Flota e Historial</button>}
         {puede('obras') && <button onClick={() => setPestana('obras')} style={{ background: pestana === 'obras' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>🏗️ Obras</button>}
@@ -865,6 +933,13 @@ export default function App() {
             {tanques.length > 0 ? (
               tanques.map(t => {
                 const esNegativo = t.stock_real < 0;
+                if (/plaasf/i.test(t.nombre)) return (
+                  <div key={t.id} style={{ backgroundColor: '#373f42', padding: '18px', borderRadius: '10px', border: '1px solid #3f62a8' }}>
+                    <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', color: '#4da3e0' }}>{t.nombre} · Planta de asfalto</h3>
+                    <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#7ea4e8' }}>{t.totalEntradas.toFixed(1)} Lts</div>
+                    <p style={{ fontSize: '12px', color: '#b4bcc0', margin: '6px 0 0 0' }}>Consumo total (el combustible se consume al recibirlo)</p>
+                  </div>
+                );
                 return (
                   <div key={t.id} style={{ backgroundColor: '#373f42', padding: '18px', borderRadius: '10px', border: `1px solid ${esNegativo ? '#ef4444' : '#3f62a8'}` }}>
                     <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', color: '#4da3e0' }}>{t.nombre}</h3>
@@ -876,6 +951,15 @@ export default function App() {
                       Entradas: +{t.totalEntradas.toFixed(1)} L<br/>
                       Salidas: -{t.totalSalidas.toFixed(1)} L
                     </div>
+                    {esAdmin && t.id !== undefined && (
+                      <div style={{ marginTop: '8px', borderTop: '1px solid #1e3a8a', paddingTop: '8px', fontSize: '11px', color: '#b4bcc0' }}>
+                        Factor del surtidor (solo cargas nuevas):
+                        <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
+                          <input key={t.id + '-' + t.factor_calibracion} id={`factor-${t.id}`} type="number" step="0.0001" defaultValue={t.factor_calibracion ?? 1} style={{ width: '90px', padding: '5px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} />
+                          <button onClick={() => handleGuardarFactor(t, document.getElementById(`factor-${t.id}`).value)} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '5px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })
@@ -1279,6 +1363,20 @@ export default function App() {
             </div>
           )}
           <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+            {editChofer && (
+              <div style={{ background: '#2b3133', border: '1px solid #7ea4e8', borderRadius: '10px', padding: '15px', marginBottom: '15px' }}>
+                <h3 style={{ color: '#7ea4e8', margin: '0 0 10px', fontSize: '15px' }}>✏️ Editando chofer</h3>
+                <datalist id="dl-eq-chofer">{equipos.map(x => <option key={x.codigo} value={x.codigo} />)}</datalist>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Nombre<input value={editChofer.nombre || ''} onChange={e => setEditChofer({ ...editChofer, nombre: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Equipo habitual<input list="dl-eq-chofer" value={editChofer.equipo_habitual || ''} onChange={e => setEditChofer({ ...editChofer, equipo_habitual: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                </div>
+                <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+                  <button onClick={handleActualizarChofer} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar cambios</button>
+                  <button onClick={() => setEditChofer(null)} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer' }}>Cancelar</button>
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
               <h2 style={{ fontSize: '18px', color: '#4da3e0', margin: 0 }}>Nómina de Choferes</h2>
               <button onClick={() => exportarACSV(choferes, 'nomina_choferes')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Descargar Excel</button>
@@ -1288,6 +1386,7 @@ export default function App() {
                 <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#b4bcc0' }}>
                   <th style={{ padding: '10px' }}>Nombre</th>
                   <th style={{ padding: '10px' }}>Equipo Asignado</th>
+                  <th style={{ padding: '10px' }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -1295,6 +1394,10 @@ export default function App() {
                   <tr key={i} style={{ borderBottom: '1px solid #131b31' }}>
                     <td style={{ padding: '10px', fontWeight: 'bold' }}>{ch.nombre}</td>
                     <td style={{ padding: '10px', color: '#7ea4e8' }}>{ch.equipo_habitual || 'Sin Asignar'}</td>
+                    <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                      {(esAdmin || tiene('logistica')) && ch.id && <button onClick={() => setEditChofer({ ...ch })} title="Editar" style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px', marginRight: '6px' }}>✏️</button>}
+                      {puede('historiales') && <button onClick={() => { setHistModo('chofer'); setHistSel(ch.nombre); setPestana('historiales'); }} style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px' }}>Historial</button>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1433,6 +1536,40 @@ export default function App() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+      {pestana === 'historiales' && puede('historiales') && (
+        <div style={{ display: 'grid', gap: '25px' }}>
+          <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #3f62a8' }}>
+            <h2 style={{ fontSize: '18px', color: '#7ea4e8', margin: '0 0 12px' }}>📚 Historiales: por dónde pasó, quién lo manejó y qué unidades usó</h2>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              {[['equipo', 'Por equipo'], ['chofer', 'Por chofer'], ['obra', 'Por obra']].map(([m, n]) => (
+                <button key={m} onClick={() => { setHistModo(m); setHistSel(''); }} style={{ background: histModo === m ? '#3f62a8' : '#454e51', color: '#fff', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>{n}</button>
+              ))}
+              <select value={histSel} onChange={e => setHistSel(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', minWidth: '240px' }}>
+                <option value="">Elegí {histModo === 'equipo' ? 'un equipo' : histModo === 'chofer' ? 'un chofer' : 'una obra'}...</option>
+                {histOpciones.map(o => <option key={o.v} value={o.v}>{o.t}</option>)}
+              </select>
+            </div>
+            <p style={{ fontSize: '12px', color: '#b4bcc0', margin: '10px 0 0' }}>Se arma solo con las cargas de combustible (cada fila es un período seguido) y con los cambios registrados en Flota e Historial.</p>
+          </div>
+          {histSel && histTablas.map(tb => (
+            <div key={tb.titulo} style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #3f62a8' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+                <h3 style={{ fontSize: '16px', color: '#7ea4e8', margin: 0 }}>{tb.titulo}</h3>
+                {tb.filas.length > 0 && <button onClick={() => exportarACSV(tb.filas.map(f => Object.fromEntries(tb.cols.map((c, i) => [c, f[i]]))), 'historial_' + histSel)} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Descargar Excel</button>}
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left' }}>
+                  <thead><tr style={{ color: '#b4bcc0', background: '#2b3133' }}>{tb.cols.map(c => <th key={c} style={{ padding: '8px' }}>{c}</th>)}</tr></thead>
+                  <tbody>
+                    {tb.filas.map((f, i) => <tr key={i} style={{ borderTop: '1px solid #454e51' }}>{f.map((v, j) => <td key={j} style={{ padding: '8px', fontWeight: j === 0 ? 'bold' : 'normal', color: j === 0 ? '#7ea4e8' : '#fff', maxWidth: '260px' }}>{v}</td>)}</tr>)}
+                    {tb.filas.length === 0 && <tr><td colSpan={tb.cols.length} style={{ padding: '20px', textAlign: 'center', color: '#b4bcc0' }}>Sin movimientos registrados.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
         </div>
       )}
       {pestana === 'flota' && puede('flota') && (
