@@ -47,6 +47,56 @@ const guardarLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); 
 const leerCola = () => leerLS(CLAVE_COLA, []);
 const esErrorDeRed = (e) => !!e && (e.offline || /fetch|network|load failed|failed to|timeout/i.test(String(e.message || e)));
 const nuevoUid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2));
+// ALERTAS-START: detección automática de desvíos (reglas estadísticas, sin conexión externa)
+const mediana = (a) => { if (!a.length) return 0; const o = [...a].sort((x, y) => x - y); const m = Math.floor(o.length / 2); return o.length % 2 ? o[m] : (o[m - 1] + o[m]) / 2; };
+function calcularAlertas({ cargas, tanques, asignaciones, hoy, dias }) {
+  const al = [];
+  const f10 = (c) => (c.Fecha || '').slice(0, 10);
+  const lect = (c) => parseFloat(c.Orometro || c.Kilometros) || 0;
+  const lit = (c) => parseFloat(c['Litros Reales']) || 0;
+  const atras = (n) => new Date(new Date(hoy).getTime() - n * 86400000).toISOString().slice(0, 10);
+  const desde = atras(dias), lim30 = atras(30), lim60 = atras(60);
+  const porEq = {};
+  cargas.filter(c => c.Equipo && f10(c)).forEach(c => { (porEq[c.Equipo] = porEq[c.Equipo] || []).push(c); });
+  Object.entries(porEq).forEach(([eq, lista]) => {
+    lista.sort((a, b) => f10(a).localeCompare(f10(b)) || ((a.id || 0) - (b.id || 0)));
+    const rs = lista.map(c => ({ c, r: parseFloat(c['Rendimiento (L/h o L/km)']) || 0, a: parseFloat(c['HM/KM Anterior']) || 0 })).filter(x => x.r > 0 && x.a > 0);
+    if (rs.length >= 5) {
+      const med = mediana(rs.map(x => x.r));
+      rs.filter(x => f10(x.c) >= desde).forEach(x => {
+        if (x.r > med * 1.6) al.push({ nivel: 'alta', tipo: 'Consumo alto', equipo: eq, fecha: f10(x.c), detalle: `Gastó ${x.r.toFixed(2)} L por hora/km; lo normal de este equipo es ${med.toFixed(2)}. Posible fuga, pérdida o lectura mal anotada.` });
+        else if (x.r < med * 0.4) al.push({ nivel: 'media', tipo: 'Consumo muy bajo', equipo: eq, fecha: f10(x.c), detalle: `Gastó ${x.r.toFixed(2)} L por hora/km; lo normal es ${med.toFixed(2)}. Revisar la lectura de horómetro o km.` });
+      });
+    }
+    const deltas = []; let prev = null;
+    lista.forEach(c => { const l = lect(c); if (l > 0) { if (prev !== null && l > prev) deltas.push(l - prev); prev = l; } });
+    const medD = mediana(deltas); prev = null;
+    lista.forEach(c => {
+      const l = lect(c); if (l <= 0) return;
+      if (prev !== null && f10(c) >= desde) {
+        if (l < prev) al.push({ nivel: 'alta', tipo: 'Lectura retrocede', equipo: eq, fecha: f10(c), detalle: `La lectura ${l} es menor que la anterior (${prev}).` });
+        else if (deltas.length >= 6 && medD > 0 && l - prev > medD * 6 && l - prev > 50) al.push({ nivel: 'media', tipo: 'Salto de lectura', equipo: eq, fecha: f10(c), detalle: `Subió ${Math.round(l - prev)} desde la carga anterior; lo habitual es ${Math.round(medD)}.` });
+      }
+      prev = l;
+    });
+    lista.forEach((c, i) => { const q = lista[i - 1]; if (q && f10(q) === f10(c) && lit(c) > 0 && Math.abs(lit(q) - lit(c)) < 1 && f10(c) >= desde) al.push({ nivel: 'media', tipo: 'Posible carga duplicada', equipo: eq, fecha: f10(c), detalle: `Dos cargas el mismo día con ${lit(c).toFixed(1)} L.` }); });
+    const parado = (asignaciones || []).filter(a => a.equipo === eq && a.estado !== 'En obra');
+    lista.filter(c => f10(c) >= desde).forEach(c => { const a = parado.find(x => x.desde <= f10(c) && (!x.hasta || f10(c) <= x.hasta)); if (a) al.push({ nivel: 'alta', tipo: 'Carga con equipo parado', equipo: eq, fecha: f10(c), detalle: `Cargó ${lit(c).toFixed(1)} L estando "${a.estado}" desde ${a.desde}.` }); });
+    const a30 = lista.filter(c => f10(c) > lim30).reduce((t, c) => t + lit(c), 0);
+    const p30 = lista.filter(c => f10(c) > lim60 && f10(c) <= lim30).reduce((t, c) => t + lit(c), 0);
+    if (p30 >= 100 && a30 > p30 * 1.4) al.push({ nivel: 'media', tipo: 'Consumo en aumento', equipo: eq, fecha: hoy.slice(0, 10), detalle: `Últimos 30 días: ${Math.round(a30)} L contra ${Math.round(p30)} L en los 30 días anteriores (+${Math.round((a30 / p30 - 1) * 100)}%).` });
+    const sinL = lista.filter(c => f10(c) >= desde && lect(c) === 0).length;
+    if (sinL >= 3) al.push({ nivel: 'info', tipo: 'Cargas sin lectura', equipo: eq, fecha: '', detalle: `${sinL} cargas sin horómetro o km en el período: no se puede medir su rendimiento.` });
+  });
+  (tanques || []).forEach(t => {
+    if (/plaasf/i.test(t.nombre)) return;
+    if (t.stock_real < 0) al.push({ nivel: 'alta', tipo: 'Cisterna en negativo', equipo: t.nombre, fecha: '', detalle: `El sistema marca ${t.stock_real.toFixed(1)} L. Revisar cargas faltantes, el factor del surtidor, o hacer un ajuste.` });
+    else if (t.capacidad > 0 && t.stock_real > t.capacidad) al.push({ nivel: 'alta', tipo: 'Cisterna sobre su capacidad', equipo: t.nombre, fecha: '', detalle: `El sistema marca ${t.stock_real.toFixed(1)} L y la capacidad es ${t.capacidad} L. Revisar el factor del surtidor o hacer un ajuste.` });
+  });
+  const orden = { alta: 0, media: 1, info: 2 };
+  return al.sort((a, b) => orden[a.nivel] - orden[b.nivel] || b.fecha.localeCompare(a.fecha));
+}
+// ALERTAS-END
 // SEG-START: arma una línea de tiempo cada vez que cambia el valor (obra, chofer o equipo)
 const segmentos = (lista, clave, extra) => {
   const out = [];
@@ -66,15 +116,15 @@ const segmentos = (lista, clave, extra) => {
 };
 // SEG-END
 const PERMISOS = {
-  admin: ['dashboard', 'historial', 'nueva_carga', 'equipos', 'choferes', 'mantenimiento', 'obras', 'flota', 'excel', 'usuarios', 'historiales'],
-  gerencia: ['dashboard'],
-  logistica: ['dashboard', 'equipos', 'obras', 'flota', 'historiales'],
+  admin: ['dashboard', 'historial', 'nueva_carga', 'equipos', 'choferes', 'mantenimiento', 'obras', 'flota', 'excel', 'usuarios', 'historiales', 'alertas', 'actividad'],
+  gerencia: ['dashboard', 'alertas'],
+  logistica: ['dashboard', 'equipos', 'obras', 'flota', 'historiales', 'alertas'],
   mantenimiento: ['mantenimiento', 'flota'],
   playero: ['nueva_carga'],
-  administrativo: ['historial', 'excel', 'historiales']
+  administrativo: ['historial', 'excel', 'historiales', 'alertas']
 };
 const ROLES = Object.keys(PERMISOS);
-const TAB_NOMBRE = { dashboard: 'Dashboard', historial: 'Historial', nueva_carga: 'Nueva Carga', equipos: 'Equipos', choferes: 'Choferes', mantenimiento: 'Mantenimiento', obras: 'Obras', flota: 'Flota e Historial', excel: 'Excel/CSV', usuarios: 'Usuarios', historiales: 'Historiales' };
+const TAB_NOMBRE = { dashboard: 'Dashboard', historial: 'Historial', nueva_carga: 'Nueva Carga', equipos: 'Equipos', choferes: 'Choferes', mantenimiento: 'Mantenimiento', obras: 'Obras', flota: 'Flota e Historial', excel: 'Excel/CSV', usuarios: 'Usuarios', historiales: 'Historiales', alertas: 'Alertas', actividad: 'Actividad' };
 const ESTADOS_FLOTA = ['En obra', 'Standby', 'Fuera de obra', 'En taller'];
 const ESTADO_COLOR = { 'En obra': '#4ade80', 'Standby': '#facc15', 'Fuera de obra': '#b4bcc0', 'En taller': '#f87171' };
 const hoyISO = () => new Date().toISOString().split('T')[0];
@@ -152,6 +202,7 @@ export default function App() {
   const [filtroAsigEquipo, setFiltroAsigEquipo] = useState('');
   const [filtroAsigObra, setFiltroAsigObra] = useState('');
   const [filtroEquipoHist, setFiltroEquipoHist] = useState('');
+  const [filtroTipoHist, setFiltroTipoHist] = useState('');
   const [vehiculoDash, setVehiculoDash] = useState('');
   const [nombreObraNueva, setNombreObraNueva] = useState('');
   const [rolesUsuario, setRolesUsuario] = useState([]);
@@ -192,6 +243,13 @@ export default function App() {
   const [excelMsg, setExcelMsg] = useState('');
   const [edit, setEdit] = useState(null);
   const [lecturaCarga, setLecturaCarga] = useState('');
+  const [alcance, setAlcance] = useState(null);
+  const alcanceRef = useRef(null);
+  const alcanceAct = !!(alcance && alcance.length);
+  const [actividadLista, setActividadLista] = useState([]);
+  const [filtroUsuarioAct, setFiltroUsuarioAct] = useState('');
+  const [alertasDias, setAlertasDias] = useState(90);
+  const [alertasNivel, setAlertasNivel] = useState('');
   const [histModo, setHistModo] = useState('equipo');
   const [histSel, setHistSel] = useState('');
   const [editChofer, setEditChofer] = useState(null);
@@ -202,6 +260,14 @@ export default function App() {
   const [refOffline, setRefOffline] = useState({});
   const sincronizandoRef = useRef(false);
   const [reemplazarTodo, setReemplazarTodo] = useState(true);
+  async function registrarActividad(accion, detalle) {
+    if (!supabase || modoOffline || !navigator.onLine) return;
+    try { await supabase.from('actividad').insert([{ usuario: sesion ? sesion.user.email : '', accion, detalle: String(detalle || '').slice(0, 500) }]); } catch (e) {}
+  }
+  useEffect(() => {
+    if (pestana !== 'actividad' || !supabase || modoOffline) return;
+    supabase.from('actividad').select('*').order('fecha', { ascending: false }).limit(300).then(({ data }) => { if (data) setActividadLista(data); });
+  }, [pestana]);
   const guardarCola = (c) => { guardarLS(CLAVE_COLA, c); setCola(c); };
   const encolarCarga = (registro) => {
     const nueva = [...leerCola(), { uid: registro.uid_offline, ts: Date.now(), registro }];
@@ -224,6 +290,7 @@ export default function App() {
         guardarCola(leerCola().filter(x => !subidos.has(x.uid)));
       }
       setMsgSync(`✅ Se subieron ${pendientes.length} carga(s) guardadas en la tablet.`);
+      registrarActividad('Carga (subida desde tablet)', `${pendientes.length} carga(s)`);
       fetchDatos();
     } catch (err) {
       setMsgSync('⚠️ Todavía no se pudo subir: ' + (err.message || 'error de conexión') + '. Se reintenta solo.');
@@ -275,6 +342,7 @@ export default function App() {
     const lista = data && data.activo ? [data.rol, ...(data.roles_extra || [])].filter(r => PERMISOS[r]) : [];
     if (lista.length > 0) {
       const permitidas = [...new Set(lista.flatMap(r => PERMISOS[r]))];
+      alcanceRef.current = (data.obras_visibles && data.obras_visibles.length) ? data.obras_visibles : null; setAlcance(alcanceRef.current);
       setSesion(session); setRol(data.rol); setRolesUsuario(lista); setPestana(permitidas[0]); setLoginMsg(''); setModoOffline(false);
       guardarLS(CLAVE_PERFIL, { email: session.user.email, rol: data.rol, roles: lista });
       fetchDatos();
@@ -319,22 +387,37 @@ export default function App() {
     setLoading(true);
     try {
       const { data: tanquesData } = await supabase.from('tanques').select('*');
-      const cargasData = await traerTodasLasCargas();
-      const { data: equiposData } = await supabase.from('equipos').select('*');
-      const { data: mantData } = await supabase.from('mantenimiento').select('*');
-      const { data: choferesData } = await supabase.from('choferes').select('*');
-      const { data: obrasData } = await supabase.from('obras').select('*').order('nombre');
-      if (obrasData) setObrasLista(obrasData);
+      const cargasRaw = await traerTodasLasCargas();
+      const { data: equiposRaw } = await supabase.from('equipos').select('*');
+      const { data: mantRaw } = await supabase.from('mantenimiento').select('*');
+      const { data: choferesRaw } = await supabase.from('choferes').select('*');
+      const { data: obrasRaw } = await supabase.from('obras').select('*').order('nombre');
       const { data: usuariosData } = await supabase.from('usuarios_app').select('*').order('email');
+      const { data: asigRaw } = await supabase.from('asignaciones').select('*').order('desde', { ascending: false }).order('id', { ascending: false });
       if (usuariosData) setUsuariosApp(usuariosData);
-      const { data: asigData } = await supabase.from('asignaciones').select('*').order('desde', { ascending: false }).order('id', { ascending: false });
+      // Alcance por obras: si el usuario tiene obras asignadas, solo ve lo de esas obras
+      const alc = alcanceRef.current;
+      let cargasData = cargasRaw, equiposData = equiposRaw, mantData = mantRaw, choferesData = choferesRaw, obrasData = obrasRaw, asigData = asigRaw;
+      if (alc && alc.length) {
+        const ok = (o) => alc.includes(o);
+        cargasData = (cargasRaw || []).filter(c => ok(c.Obra));
+        asigData = (asigRaw || []).filter(a => ok(a.obra));
+        const cods = new Set([...cargasData.map(c => c.Equipo).filter(Boolean), ...asigData.map(a => a.equipo), ...(equiposRaw || []).filter(e => ok(e.obra_predeterminada)).map(e => e.codigo)]);
+        const nombres = new Set(cargasData.map(c => c.Chofer).filter(Boolean));
+        equiposData = (equiposRaw || []).filter(e => cods.has(e.codigo));
+        mantData = (mantRaw || []).filter(m => cods.has(m.codigo_equipo));
+        choferesData = (choferesRaw || []).filter(ch => nombres.has(ch.nombre) || cods.has(ch.equipo_habitual));
+        obrasData = (obrasRaw || []).filter(o => ok(o.nombre));
+      }
+      const acotado = !!(alc && alc.length);
+      if (obrasData) setObrasLista(obrasData);
       if (asigData) setAsignaciones(asigData);
-      if (choferesData && choferesData.length > 0) setChoferes(choferesData);
+      if (choferesData && (choferesData.length > 0 || acotado)) setChoferes(choferesData);
       if (cargasData) {
         setTodasLasCargas(cargasData);
         extraerEquipos(cargasData);
       }
-      if (equiposData && equiposData.length > 0) {
+      if (equiposData && (equiposData.length > 0 || acotado)) {
         setEquipos(equiposData);
       }
       if (mantData) {
@@ -345,7 +428,7 @@ export default function App() {
         { id: 2, nombre: 'Cisterna Camión', capacidad_l: 4000, stock_inicial_l: 0, factor_calibracion: 0.9852 },
         { id: 3, nombre: 'PLAASF', capacidad_l: 2000, stock_inicial_l: 0, factor_calibracion: 1 }
       ];
-      calcularStockTanques(listaTanquesBase, cargasData || []);
+      calcularStockTanques(listaTanquesBase, cargasRaw || []);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
@@ -439,19 +522,20 @@ export default function App() {
         ...(tipo !== 'Consumo' ? { Chofer: '', Obra: '' } : {})
       };
       const registroAjuste = esAjuste ? { ...formCarga, "Tipo Movimiento": 'Ajuste de Stock', Origen: indicados < 0 ? formCarga.Origen : '', "Destino / Equipo": indicados > 0 ? formCarga.Origen : '', Equipo: '', Chofer: '', Obra: '', "Tipo Combustible": '', "Litros Indicados": indicados, "Factor Calibracion": 1, "Litros Reales": Math.abs(indicados), Orometro: '', Kilometros: '' } : null;
-      const registroFinal = { ...(esAjuste ? registroAjuste : registro), uid_offline: nuevoUid() };
+      const registroFinal = { ...(esAjuste ? registroAjuste : registro), uid_offline: nuevoUid(), creado_por: sesion ? sesion.user.email : '' };
       let error = null;
       if (modoOffline || !navigator.onLine) error = { offline: true };
       else {
         try {
           ({ error } = await supabase.from('cargas_diarias').insert([registroFinal]));
-          if (error && /uid_offline/.test(error.message || '')) { const { uid_offline, ...sinUid } = registroFinal; ({ error } = await supabase.from('cargas_diarias').insert([sinUid])); }
+          if (error && /uid_offline|creado_por/.test(error.message || '')) { const { uid_offline, creado_por, ...sinUid } = registroFinal; ({ error } = await supabase.from('cargas_diarias').insert([sinUid])); }
         } catch (err) { error = err; }
       }
       const enCola = !!error && esErrorDeRed(error);
       if (error && !enCola) throw error;
       if (enCola) { encolarCarga(registroFinal); alert('📴 Sin conexión: la carga quedó guardada en esta tablet y se subirá sola cuando haya internet.'); }
       else alert('¡Carga registrada con éxito!');
+      if (!enCola) registrarActividad('Carga', `${registroFinal['Tipo Movimiento']} · ${registroFinal.Equipo || registroFinal.Origen || ''} · ${registroFinal['Litros Reales']} L`);
       setLecturaCarga('');
       setFormCarga({
         Fecha: new Date().toISOString().split('T')[0],
@@ -513,6 +597,7 @@ export default function App() {
       await supabase.from('mantenimiento').insert([nuevoReg]);
     } catch (err) { console.error(err); }
     setFormService({ codigo_equipo: '', hm_km_actual: '', tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
+    registrarActividad('Service registrado', `${nuevoReg.codigo_equipo} · ${nuevoReg.ultimo_hm_km} hs/km`);
     alert('¡Registro de Service guardado correctamente!');
   };
   const handleGuardarEdicion = async () => {
@@ -530,6 +615,7 @@ export default function App() {
       }
       const { error } = await supabase.from('cargas_diarias').update(cambios).eq('id', edit.id);
       if (error) throw error;
+      registrarActividad('Edición de carga', `#${edit.id} · ${edit.Equipo || edit.Origen || ''} · ${cambios['Litros Reales']} L · ${edit.Fecha}`);
       setEdit(null);
       await fetchDatos();
     } catch (err) { alert('Error al guardar: ' + err.message); }
@@ -538,6 +624,7 @@ export default function App() {
     if (!window.confirm('¿Eliminar este registro definitivamente? Cambia el stock y los consumos.')) return;
     const { error } = await supabase.from('cargas_diarias').delete().eq('id', edit.id);
     if (error) { alert('Error al eliminar: ' + error.message); return; }
+    registrarActividad('Eliminación de carga', `#${edit.id} · ${edit['Tipo Movimiento']} · ${edit.Equipo || edit.Origen || ''} · ${edit['Litros Reales']} L · ${edit.Fecha}`);
     setEdit(null);
     await fetchDatos();
   };
@@ -565,6 +652,7 @@ export default function App() {
       const { error } = await supabase.from('asignaciones').insert([{ equipo: f.equipo, estado: f.estado, obra: f.estado === 'En obra' ? f.obra : '', chofer: f.chofer, desde: f.fecha, horometro_desde: hm, observaciones: f.observaciones }]);
       if (error) throw error;
       if (f.estado === 'En obra' && (tiene('admin') || tiene('logistica'))) await supabase.from('equipos').update({ obra_predeterminada: f.obra }).eq('codigo', f.equipo);
+      registrarActividad('Cambio de flota', `${f.equipo} → ${f.estado}${f.obra ? ' · ' + f.obra : ''}${f.chofer ? ' · ' + f.chofer : ''}`);
       setFormAsig({ ...f, equipo: '', chofer: '', horometro: '', observaciones: '' });
       await fetchDatos();
     } catch (err) { alert('Error al registrar (¿ejecutaste etapa3_flota.sql?): ' + err.message); }
@@ -575,6 +663,7 @@ export default function App() {
       await cerrarAbierta(cod, hoyISO(), null);
       const { error } = await supabase.from('asignaciones').insert([{ equipo: cod, estado: 'En obra', obra: (eq && eq.obra_predeterminada) || '', chofer: '', desde: hoyISO(), observaciones: 'Salida de taller' }]);
       if (error) throw error;
+      registrarActividad('Salida de taller', cod);
       await fetchDatos();
     } catch (err) { alert('Error: ' + err.message); }
   };
@@ -594,10 +683,15 @@ export default function App() {
     const { error } = await supabase.from('usuarios_app').update(cambios).eq('id', u.id);
     if (error) { alert('Error: ' + error.message); return; }
     setUsuariosApp(prev => prev.map(x => x.id === u.id ? { ...x, ...cambios } : x));
+    registrarActividad('Usuario modificado', `${u.email}: ${JSON.stringify(cambios)}`);
   };
   const toggleRolExtra = (u, r) => {
     const act = u.roles_extra || [];
     handleActualizarUsuario(u, { roles_extra: act.includes(r) ? act.filter(x => x !== r) : [...act, r] });
+  };
+  const toggleObraUsuario = (u, o) => {
+    const act = u.obras_visibles || [];
+    handleActualizarUsuario(u, { obras_visibles: act.includes(o) ? act.filter(x => x !== o) : [...act, o] });
   };
   const handleAltaUsuario = async (e) => {
     e.preventDefault();
@@ -606,6 +700,7 @@ export default function App() {
     const { data, error } = await supabase.from('usuarios_app').insert([{ email, nombre: formUsuario.nombre, rol: formUsuario.rol, roles_extra: [] }]).select();
     if (error) { alert('Error: ' + error.message); return; }
     setUsuariosApp([...usuariosApp, ...(data || [])]);
+    registrarActividad('Usuario nuevo', `${email} · ${formUsuario.rol}`);
     setFormUsuario({ email: '', nombre: '', rol: 'gerencia' });
   };
   const handleAgregarObra = async () => {
@@ -615,12 +710,14 @@ export default function App() {
     const { data, error } = await supabase.from('obras').insert([{ nombre: n, activa: true }]).select();
     if (error) { alert('Error al crear la obra: ' + error.message); return; }
     setObrasLista([...obrasLista, ...(data || [])]);
+    registrarActividad('Obra nueva', n);
     setNombreObraNueva('');
   };
   const handleToggleObra = async (o) => {
     const { error } = await supabase.from('obras').update({ activa: !o.activa }).eq('id', o.id);
     if (error) { alert('Error: ' + error.message); return; }
     setObrasLista(obrasLista.map(x => x.id === o.id ? { ...x, activa: !o.activa } : x));
+    registrarActividad(o.activa ? 'Obra dada de baja' : 'Obra reactivada', o.nombre);
   };
   const resumenObras = obrasLista.map(o => {
     const cs = todasLasCargas.filter(c => c.Obra === o.nombre);
@@ -641,6 +738,7 @@ export default function App() {
     const { error } = await supabase.from('tanques').update({ factor_calibracion: n }).eq('id', t.id);
     if (error) { alert('Error al guardar el factor: ' + error.message); return; }
     setTanques(prev => prev.map(x => x.id === t.id ? { ...x, factor_calibracion: n } : x));
+    registrarActividad('Cambio de factor del surtidor', `${t.nombre}: ${t.factor_calibracion ?? 1} → ${n}`);
     alert('Factor actualizado.');
   };
   const handleActualizarChofer = async () => {
@@ -653,6 +751,7 @@ export default function App() {
       const r = await supabase.from('cargas_diarias').update({ Chofer: nombre }).eq('Chofer', orig.nombre);
       if (r.error) alert('No se pudo actualizar el nombre en las cargas: ' + r.error.message);
     }
+    registrarActividad('Chofer modificado', `${orig ? orig.nombre : ''} → ${nombre} · equipo ${editChofer.equipo_habitual || '-'}`);
     setEditChofer(null);
     await fetchDatos();
   };
@@ -715,6 +814,7 @@ export default function App() {
         setExcelMsg(`Subiendo... ${Math.min(i + 200, filas.length)} de ${filas.length}`);
       }
       setExcelMsg(`✅ Listo: ${filas.length} movimientos cargados en Supabase.`);
+      registrarActividad('Importación de planilla', `${filas.length} movimientos${reemplazarTodo ? ' (reemplazó todo el historial)' : ''}`);
       await fetchDatos();
     } catch (err) {
       setExcelMsg('❌ Error al subir: ' + (err.message || JSON.stringify(err)));
@@ -739,7 +839,7 @@ export default function App() {
   ];
   const obrasDisponibles = [...new Set([...obrasLista.map(o => o.nombre), ...todasLasCargas.map(c => c.Obra).filter(Boolean)])].sort();
   const obrasSeleccionables = obrasLista.filter(o => o.activa !== false).map(o => o.nombre).length > 0 ? obrasLista.filter(o => o.activa !== false).map(o => o.nombre) : ['RN40', 'CANTERA', 'PLANTA ÁRIDOS', 'PLANTA ASFALTO'];
-  const cargasFiltradas = todasLasCargas.filter(c => !filtroEquipoHist || c.Equipo === filtroEquipoHist || c['Destino / Equipo'] === filtroEquipoHist).filter(c => {
+  const cargasFiltradas = todasLasCargas.filter(c => !filtroTipoHist || c['Tipo Movimiento'] === filtroTipoHist).filter(c => !filtroEquipoHist || c.Equipo === filtroEquipoHist || c['Destino / Equipo'] === filtroEquipoHist).filter(c => {
     if (!c.Fecha) return true;
     const fechaCarga = c.Fecha.split('T')[0];
     const anioCarga = fechaCarga.split('-')[0] || '';
@@ -874,6 +974,9 @@ export default function App() {
     if (asig.length) tablas.push({ titulo: 'Cambios registrados en Flota e Historial', cols: ['Equipo', 'Estado', 'Obra', 'Chofer', 'Desde', 'Hasta', 'Horóm. entrada → salida'], filas: asig.map(a => [a.equipo, a.estado, a.obra || '-', a.chofer || '-', a.desde, a.hasta || 'Vigente', `${a.horometro_desde ?? '-'} → ${a.horometro_hasta ?? '-'}`]) });
     return tablas;
   })();
+  const alertas = React.useMemo(() => (puede('alertas') && !modoOffline) ? calcularAlertas({ cargas: todasLasCargas, tanques: alcanceAct ? [] : tanques, asignaciones, hoy: hoyISO(), dias: alertasDias }) : [], [todasLasCargas, tanques, asignaciones, alertasDias, rolesUsuario, modoOffline, alcanceAct]);
+  const alertasVistas = alertas.filter(a => !alertasNivel || a.nivel === alertasNivel);
+  const nAlertas = alertas.filter(a => a.nivel !== 'info').length;
   if (!authListo) return <div style={{ minHeight: '100vh', background: '#2b3133', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>Cargando...</div>;
   if (!sesion) return (
     <div style={{ minHeight: '100vh', background: '#2b3133', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif', padding: '20px' }}>
@@ -917,6 +1020,8 @@ export default function App() {
         {puede('equipos') && <button onClick={() => setPestana('equipos')} style={{ background: pestana === 'equipos' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'equipos' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Equipos y Obras</button>}
         {puede('choferes') && <button onClick={() => setPestana('choferes')} style={{ background: pestana === 'choferes' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'choferes' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Choferes</button>}
         {puede('mantenimiento') && <button onClick={() => setPestana('mantenimiento')} style={{ background: pestana === 'mantenimiento' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: pestana === 'mantenimiento' ? '1px solid #38bdf8' : 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Mantenimiento</button>}
+        {puede('actividad') && <button onClick={() => setPestana('actividad')} style={{ background: pestana === 'actividad' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>🕒 Actividad</button>}
+        {puede('alertas') && <button onClick={() => setPestana('alertas')} style={{ background: pestana === 'alertas' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>🚨 Alertas{nAlertas > 0 ? ` (${nAlertas})` : ''}</button>}
         {puede('historiales') && <button onClick={() => setPestana('historiales')} style={{ background: pestana === 'historiales' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>📚 Historiales</button>}
         {puede('usuarios') && <button onClick={() => setPestana('usuarios')} style={{ background: pestana === 'usuarios' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>👥 Usuarios</button>}
         {puede('flota') && <button onClick={() => setPestana('flota')} style={{ background: pestana === 'flota' ? '#3f62a8' : '#454e51', color: '#f8fafc', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>🚛 Flota e Historial</button>}
@@ -925,6 +1030,8 @@ export default function App() {
       </div>
       {pestana === 'dashboard' && (
         <div>
+          {alcanceAct && <p style={{ fontSize: '13px', color: '#7ea4e8', margin: '0 0 15px' }}>👁️ Estás viendo solo: {alcance.join(', ')}</p>}
+          {!alcanceAct && (<>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
             <h2 style={{ fontSize: '16px', color: '#cbd5e1', margin: 0 }}>Stock Actual en Cisternas (Litros Reales Oficiales al 16/10)</h2>
             <button onClick={() => exportarACSV(tanques, 'stock_cisternas')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Descargar Excel</button>
@@ -969,6 +1076,7 @@ export default function App() {
               </div>
             )}
           </div>
+          </>)}
           <div style={{ backgroundColor: '#373f42', padding: '15px', borderRadius: '10px', border: '1px solid #1e3a8a', marginBottom: '20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
             <div>
               <label style={{ fontSize: '11px', color: '#cbd5e1', display: 'block', marginBottom: '3px' }}>Año</label>
@@ -1128,6 +1236,16 @@ export default function App() {
               <input type="text" placeholder="Todos" value={filtroDia} onChange={e => setFiltroDia(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', width: '80px' }} />
             </div>
             <div>
+              <label style={{ display: 'block', fontSize: '11px', color: '#b4bcc0', marginBottom: '4px' }}>Movimiento</label>
+              <select value={filtroTipoHist} onChange={e => setFiltroTipoHist(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
+                <option value="">Todos</option>
+                <option value="Consumo">Consumo</option>
+                <option value="Transferencia">Transferencia</option>
+                <option value="Compra">Compra</option>
+                <option value="Ajuste de Stock">Ajuste de stock</option>
+              </select>
+            </div>
+            <div>
               <label style={{ display: 'block', fontSize: '11px', color: '#b4bcc0', marginBottom: '4px' }}>Equipo</label>
               <select value={filtroEquipoHist} onChange={e => setFiltroEquipoHist(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
                 <option value="">Todos</option>
@@ -1135,7 +1253,7 @@ export default function App() {
               </select>
             </div>
             <div>
-              <button onClick={() => { setFiltroAnio(''); setFiltroMes(''); setFiltroDia(''); setFiltroEquipoHist(''); }} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Limpiar Filtros</button>
+              <button onClick={() => { setFiltroAnio(''); setFiltroMes(''); setFiltroDia(''); setFiltroEquipoHist(''); setFiltroTipoHist(''); }} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Limpiar Filtros</button>
             </div>
           </div>
           <p style={{ color: '#7ea4e8', fontSize: '14px', margin: '0 0 12px' }}>📊 {cargasFiltradas.length} movimientos · {cargasFiltradas.reduce((t, c) => t + (parseFloat(c['Litros Reales']) || 0), 0).toFixed(0)} L en total (según los filtros elegidos)</p>
@@ -1172,6 +1290,7 @@ export default function App() {
                   <th style={{ padding: '12px' }}>Chofer</th>
                   <th style={{ padding: '12px' }}>Litros</th>
                   <th style={{ padding: '12px' }}>Obra</th>
+                  <th style={{ padding: '12px' }}>Cargó</th>
                   {puedeEditarHist && <th style={{ padding: '12px' }}></th>}
                 </tr>
               </thead>
@@ -1180,12 +1299,13 @@ export default function App() {
                   cargasFiltradas.map((c, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid #131b31' }}>
                       <td style={{ padding: '12px' }}>{c.Fecha || '-'}</td>
-                      <td style={{ padding: '12px', color: c['Tipo Movimiento'] === 'Compra' ? '#4ade80' : '#4da3e0' }}>{c['Tipo Movimiento'] || '-'}</td>
+                      <td style={{ padding: '12px', color: c['Tipo Movimiento'] === 'Compra' ? '#4ade80' : c['Tipo Movimiento'] === 'Transferencia' ? '#facc15' : c['Tipo Movimiento'] === 'Ajuste de Stock' ? '#f97316' : '#4da3e0' }}>{c['Tipo Movimiento'] || '-'}</td>
                       <td style={{ padding: '12px' }}>{c.Origen || '-'}</td>
                       <td style={{ padding: '12px', fontWeight: 'bold' }}>{c.Equipo || '-'}</td>
                       <td style={{ padding: '12px' }}>{c.Chofer || '-'}</td>
                       <td style={{ padding: '12px', fontWeight: 'bold', color: '#7ea4e8' }}>{c['Tipo Movimiento'] === 'Ajuste de Stock' ? (c['Destino / Equipo'] ? '+' : '−') : ''}{c['Litros Reales'] || c['Litros Indicados'] || 0} L</td>
                       <td style={{ padding: '12px' }}>{c.Obra || '-'}</td>
+                      <td style={{ padding: '12px', fontSize: '12px', color: '#b4bcc0' }}>{(c.creado_por || '-').split('@')[0]}</td>
                       {puedeEditarHist && <td style={{ padding: '12px' }}><button onClick={() => setEdit({ ...c, lectura: c.Orometro || c.Kilometros || '' })} title="Editar" style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px' }}>✏️</button></td>}
                     </tr>
                   ))
@@ -1523,16 +1643,88 @@ export default function App() {
           </form>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left' }}>
-              <thead><tr style={{ color: '#b4bcc0', background: '#2b3133' }}><th style={{ padding: '8px' }}>Usuario</th><th style={{ padding: '8px' }}>Rol principal</th><th style={{ padding: '8px' }}>Roles adicionales</th><th style={{ padding: '8px' }}>Pestañas que ve</th><th style={{ padding: '8px' }}>Activo</th></tr></thead>
+              <thead><tr style={{ color: '#b4bcc0', background: '#2b3133' }}><th style={{ padding: '8px' }}>Usuario</th><th style={{ padding: '8px' }}>Rol principal</th><th style={{ padding: '8px' }}>Roles adicionales</th><th style={{ padding: '8px' }}>Obras que ve</th><th style={{ padding: '8px' }}>Pestañas que ve</th><th style={{ padding: '8px' }}>Activo</th></tr></thead>
               <tbody>
                 {usuariosApp.map(u => { const propio = sesion && sesion.user.email.toLowerCase() === u.email.toLowerCase(); const lista = [u.rol, ...(u.roles_extra || [])]; return (
                   <tr key={u.id} style={{ borderTop: '1px solid #454e51', opacity: u.activo ? 1 : 0.5 }}>
                     <td style={{ padding: '8px' }}><b style={{ color: '#7ea4e8' }}>{u.email}</b><br /><span style={{ color: '#b4bcc0' }}>{u.nombre}{propio ? ' (vos)' : ''}</span></td>
                     <td style={{ padding: '8px' }}><select disabled={propio} value={u.rol} onChange={e => handleActualizarUsuario(u, { rol: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }}>{ROLES.map(r => <option key={r} value={r}>{ETIQUETA_ROL[r]}</option>)}</select></td>
                     <td style={{ padding: '8px' }}>{ROLES.filter(r => r !== u.rol).map(r => <label key={r} style={{ display: 'block', fontSize: '12px' }}><input type="checkbox" disabled={propio} checked={(u.roles_extra || []).includes(r)} onChange={() => toggleRolExtra(u, r)} /> {ETIQUETA_ROL[r]}</label>)}</td>
+                    <td style={{ padding: '8px' }}>
+                      <details>
+                        <summary style={{ cursor: 'pointer', fontSize: '12px', color: '#7ea4e8' }}>{(u.obras_visibles || []).length ? `${u.obras_visibles.length} obra(s)` : 'Todas las obras'}</summary>
+                        {obrasDisponibles.map(o => <label key={o} style={{ display: 'block', fontSize: '12px' }}><input type="checkbox" checked={(u.obras_visibles || []).includes(o)} onChange={() => toggleObraUsuario(u, o)} /> {o}</label>)}
+                        <p style={{ fontSize: '11px', color: '#b4bcc0', margin: '4px 0 0' }}>Sin tildar ninguna = ve todas.</p>
+                      </details>
+                    </td>
                     <td style={{ padding: '8px', fontSize: '12px', maxWidth: '220px' }}>{[...new Set(lista.flatMap(r => PERMISOS[r] || []))].map(t => TAB_NOMBRE[t]).join(', ')}</td>
                     <td style={{ padding: '8px' }}><input type="checkbox" disabled={propio} checked={!!u.activo} onChange={e => handleActualizarUsuario(u, { activo: e.target.checked })} /></td>
                   </tr>); })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {pestana === 'actividad' && puede('actividad') && (
+        <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #3f62a8' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+            <h2 style={{ fontSize: '18px', color: '#7ea4e8', margin: 0 }}>🕒 Últimos movimientos: quién hizo qué</h2>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <select value={filtroUsuarioAct} onChange={e => setFiltroUsuarioAct(e.target.value)} style={{ padding: '6px', background: '#2b3133', color: '#fff', border: '1px solid #3f62a8', borderRadius: '6px' }}>
+                <option value="">Todos los usuarios</option>
+                {[...new Set(actividadLista.map(a => a.usuario).filter(Boolean))].map(u => <option key={u} value={u}>{u}</option>)}
+              </select>
+              <button onClick={() => exportarACSV(actividadLista.filter(a => !filtroUsuarioAct || a.usuario === filtroUsuarioAct).map(a => ({ Fecha: new Date(a.fecha).toLocaleString('es-AR'), Usuario: a.usuario, Accion: a.accion, Detalle: a.detalle })), 'actividad')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>📥 Descargar Excel</button>
+            </div>
+          </div>
+          <p style={{ fontSize: '12px', color: '#b4bcc0', margin: '0 0 14px' }}>Se registran las cargas, correcciones, cambios de flota, services, cambios de usuarios y obras. Las cargas hechas sin internet figuran cuando se suben. Se muestran los últimos 300 movimientos.</p>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left' }}>
+              <thead><tr style={{ color: '#b4bcc0', background: '#2b3133' }}><th style={{ padding: '8px' }}>Fecha y hora</th><th style={{ padding: '8px' }}>Usuario</th><th style={{ padding: '8px' }}>Qué hizo</th><th style={{ padding: '8px' }}>Detalle</th></tr></thead>
+              <tbody>
+                {actividadLista.filter(a => !filtroUsuarioAct || a.usuario === filtroUsuarioAct).map(a => (
+                  <tr key={a.id} style={{ borderTop: '1px solid #454e51' }}>
+                    <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>{new Date(a.fecha).toLocaleString('es-AR')}</td>
+                    <td style={{ padding: '8px', color: '#7ea4e8', fontWeight: 'bold' }}>{(a.usuario || '').split('@')[0]}</td>
+                    <td style={{ padding: '8px', fontWeight: 'bold' }}>{a.accion}</td>
+                    <td style={{ padding: '8px', maxWidth: '420px' }}>{a.detalle}</td>
+                  </tr>
+                ))}
+                {actividadLista.length === 0 && <tr><td colSpan="4" style={{ padding: '25px', textAlign: 'center', color: '#b4bcc0' }}>Todavía no hay movimientos registrados (¿ejecutaste etapa9_A?).</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {pestana === 'alertas' && puede('alertas') && (
+        <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #3f62a8' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+            <h2 style={{ fontSize: '18px', color: '#7ea4e8', margin: 0 }}>🚨 Alertas y posibles desvíos</h2>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <select value={alertasDias} onChange={e => setAlertasDias(parseInt(e.target.value))} style={{ padding: '6px', background: '#2b3133', color: '#fff', border: '1px solid #3f62a8', borderRadius: '6px' }}>
+                <option value={30}>Últimos 30 días</option><option value={90}>Últimos 90 días</option><option value={180}>Últimos 180 días</option><option value={365}>Último año</option>
+              </select>
+              <select value={alertasNivel} onChange={e => setAlertasNivel(e.target.value)} style={{ padding: '6px', background: '#2b3133', color: '#fff', border: '1px solid #3f62a8', borderRadius: '6px' }}>
+                <option value="">Todas</option><option value="alta">🔴 Alta</option><option value="media">🟠 Media</option><option value="info">ℹ️ Informativas</option>
+              </select>
+              {alertasVistas.length > 0 && <button onClick={() => exportarACSV(alertasVistas.map(a => ({ Nivel: a.nivel, Tipo: a.tipo, 'Equipo / Cisterna': a.equipo, Fecha: a.fecha, Detalle: a.detalle })), 'alertas')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>📥 Descargar Excel</button>}
+            </div>
+          </div>
+          <p style={{ fontSize: '12px', color: '#b4bcc0', margin: '0 0 14px' }}>La app revisa sola las cargas y marca lo que se sale de lo normal de cada equipo. No son errores seguros: son cosas para revisar.</p>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left' }}>
+              <thead><tr style={{ color: '#b4bcc0', background: '#2b3133' }}><th style={{ padding: '8px' }}>Nivel</th><th style={{ padding: '8px' }}>Qué pasó</th><th style={{ padding: '8px' }}>Equipo / Cisterna</th><th style={{ padding: '8px' }}>Fecha</th><th style={{ padding: '8px' }}>Detalle</th></tr></thead>
+              <tbody>
+                {alertasVistas.map((a, i) => (
+                  <tr key={i} style={{ borderTop: '1px solid #454e51' }}>
+                    <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>{a.nivel === 'alta' ? '🔴 Alta' : a.nivel === 'media' ? '🟠 Media' : 'ℹ️ Info'}</td>
+                    <td style={{ padding: '8px', fontWeight: 'bold' }}>{a.tipo}</td>
+                    <td style={{ padding: '8px', color: '#7ea4e8', fontWeight: 'bold' }}>{a.equipo}</td>
+                    <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>{a.fecha || '-'}</td>
+                    <td style={{ padding: '8px', maxWidth: '420px' }}>{a.detalle}</td>
+                  </tr>
+                ))}
+                {alertasVistas.length === 0 && <tr><td colSpan="5" style={{ padding: '25px', textAlign: 'center', color: '#4ade80' }}>✅ No se encontraron desvíos en este período.</td></tr>}
               </tbody>
             </table>
           </div>
