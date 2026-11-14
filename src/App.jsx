@@ -47,6 +47,7 @@ const guardarLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); 
 const leerCola = () => leerLS(CLAVE_COLA, []);
 const esErrorDeRed = (e) => !!e && (e.offline || /fetch|network|load failed|failed to|timeout/i.test(String(e.message || e)));
 const nuevoUid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2));
+const ordenNat = (a, b) => String(a || '').localeCompare(String(b || ''), 'es', { numeric: true, sensitivity: 'base' });
 // ALERTAS-START: detección automática de desvíos (reglas estadísticas, sin conexión externa)
 const mediana = (a) => { if (!a.length) return 0; const o = [...a].sort((x, y) => x - y); const m = Math.floor(o.length / 2); return o.length % 2 ? o[m] : (o[m - 1] + o[m]) / 2; };
 function calcularAlertas({ cargas, tanques, asignaciones, hoy, dias }) {
@@ -88,6 +89,12 @@ function calcularAlertas({ cargas, tanques, asignaciones, hoy, dias }) {
     const sinL = lista.filter(c => f10(c) >= desde && lect(c) === 0).length;
     if (sinL >= 3) al.push({ nivel: 'info', tipo: 'Cargas sin lectura', equipo: eq, fecha: '', detalle: `${sinL} cargas sin horómetro o km en el período: no se puede medir su rendimiento.` });
   });
+  const porChoferDia = {};
+  cargas.filter(c => c.Chofer && c.Equipo && f10(c) >= desde).forEach(c => { const k = c.Chofer + '|' + f10(c); (porChoferDia[k] = porChoferDia[k] || new Set()).add(c.Equipo); });
+  Object.entries(porChoferDia).forEach(([k, set]) => { if (set.size > 1) { const [ch, f] = k.split('|'); al.push({ nivel: 'media', tipo: 'Chofer en dos unidades', equipo: ch, fecha: f, detalle: `Figura cargando en ${[...set].join(' y ')} el mismo día. Revisar si el chofer está bien anotado.` }); } });
+  const porCh = {};
+  (asignaciones || []).filter(a => !a.hasta && a.estado === 'En obra' && a.chofer).forEach(a => { (porCh[a.chofer] = porCh[a.chofer] || []).push(a.equipo); });
+  Object.entries(porCh).forEach(([ch, eqs]) => { if (eqs.length > 1) al.push({ nivel: 'media', tipo: 'Chofer asignado a dos unidades', equipo: ch, fecha: '', detalle: `Figura asignado a la vez a ${eqs.join(' y ')} en Flota e Historial.` }); });
   (tanques || []).forEach(t => {
     if (/plaasf/i.test(t.nombre)) return;
     if (t.stock_real < 0) al.push({ nivel: 'alta', tipo: 'Cisterna en negativo', equipo: t.nombre, fecha: '', detalle: `El sistema marca ${t.stock_real.toFixed(1)} L. Revisar cargas faltantes, el factor del surtidor, o hacer un ajuste.` });
@@ -235,8 +242,8 @@ export default function App() {
     Observaciones: ''
   });
   const [nuevoChofer, setNuevoChofer] = useState({ nombre: '', equipo_habitual: '' });
-  const [nuevoEquipo, setNuevoEquipo] = useState({ codigo: '', descripcion: '', tipo: 'Máquina', obra_predeterminada: 'RN40', tipo_combustible: 'Infinia Diesel' });
-  const [formService, setFormService] = useState({ codigo_equipo: '', hm_km_actual: '', tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
+  const [nuevoEquipo, setNuevoEquipo] = useState({ codigo: '', descripcion: '', tipo: 'Máquina', obra_predeterminada: 'RN40', tipo_combustible: 'Infinia Diesel', modelo: '', patente: '', nro_serie: '' });
+  const [formService, setFormService] = useState({ codigo_equipo: '', hm_km_actual: '', fecha: hoyISO(), tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
   const [excelRows, setExcelRows] = useState([]);
   const [excelName, setExcelName] = useState('');
   const [subiendoExcel, setSubiendoExcel] = useState(false);
@@ -248,6 +255,13 @@ export default function App() {
   const alcanceAct = !!(alcance && alcance.length);
   const [actividadLista, setActividadLista] = useState([]);
   const [filtroUsuarioAct, setFiltroUsuarioAct] = useState('');
+  const [editService, setEditService] = useState(null);
+  const [editEquipo, setEditEquipo] = useState(null);
+  const [destinoCarga, setDestinoCarga] = useState('');
+  const [mcCombustible, setMcCombustible] = useState('');
+  const [mcA, setMcA] = useState('');
+  const [mcB, setMcB] = useState('');
+  const [formPeriodo, setFormPeriodo] = useState({ equipo: '', estado: 'En obra', obra: '', chofer: '', desde: '', hasta: '', horometro_desde: '', horometro_hasta: '', observaciones: '' });
   const [alertasDias, setAlertasDias] = useState(90);
   const [alertasNivel, setAlertasNivel] = useState('');
   const [histModo, setHistModo] = useState('equipo');
@@ -409,6 +423,9 @@ export default function App() {
         choferesData = (choferesRaw || []).filter(ch => nombres.has(ch.nombre) || cods.has(ch.equipo_habitual));
         obrasData = (obrasRaw || []).filter(o => ok(o.nombre));
       }
+      if (equiposData) equiposData = [...equiposData].sort((a, b) => ordenNat(a.codigo, b.codigo));
+      if (choferesData) choferesData = [...choferesData].sort((a, b) => ordenNat(a.nombre, b.nombre));
+      if (obrasData) obrasData = [...obrasData].sort((a, b) => ordenNat(a.nombre, b.nombre));
       const acotado = !!(alc && alc.length);
       if (obrasData) setObrasLista(obrasData);
       if (asigData) setAsignaciones(asigData);
@@ -501,8 +518,9 @@ export default function App() {
         if (lectura > 0 && anterior && lectura < anterior && !window.confirm(`La lectura ${lectura} es menor que la última registrada (${anterior}). ¿Guardar igual?`)) return;
       }
       const destino = tipo === 'Consumo' ? formCarga.Equipo
-        : (tipo === 'Transferencia' ? 'Cisterna Camión'
-        : (formCarga.Origen === 'Dafre (chiringuito)' ? 'Cisterna Camión' : 'Cisterna Principal (PPL)'));
+        : (destinoCarga || (tipo === 'Transferencia' ? 'Cisterna Camión'
+        : (formCarga.Origen === 'Dafre (chiringuito)' ? 'Cisterna Camión' : 'Cisterna Principal (PPL)')));
+      if (tipo === 'Transferencia' && (!tanques.some(t => t.nombre === formCarga.Origen) || destino === formCarga.Origen)) throw new Error('Para una transferencia elegí una cisterna de origen y una cisterna de destino distinta.');
       const tanqueOrigen = tanques.find(t => t.nombre === formCarga.Origen);
       const factor = tanqueOrigen && tanqueOrigen.factor_calibracion ? parseFloat(tanqueOrigen.factor_calibracion) : 1;
       const colLec = usaKm(formCarga.Equipo) ? 'Kilometros' : 'Orometro';
@@ -537,6 +555,7 @@ export default function App() {
       else alert('¡Carga registrada con éxito!');
       if (!enCola) registrarActividad('Carga', `${registroFinal['Tipo Movimiento']} · ${registroFinal.Equipo || registroFinal.Origen || ''} · ${registroFinal['Litros Reales']} L`);
       setLecturaCarga('');
+      setDestinoCarga('');
       setFormCarga({
         Fecha: new Date().toISOString().split('T')[0],
         "Tipo Movimiento": 'Consumo',
@@ -555,24 +574,60 @@ export default function App() {
       alert('Error al guardar: ' + err.message);
     }
   };
+  const normTxt = (x) => (x || '').trim().toLowerCase().replace(/\s+/g, ' ');
   const handleGuardarChofer = async (e) => {
     e.preventDefault();
-    if (!nuevoChofer.nombre) return;
-    const ch = { id: Date.now(), nombre: nuevoChofer.nombre, equipo_habitual: nuevoChofer.equipo_habitual };
-    setChoferes([...choferes, ch]);
-    try { await supabase.from('choferes').insert([{ nombre: ch.nombre, equipo_habitual: ch.equipo_habitual }]); } catch (err) { console.error(err); }
+    const nombre = (nuevoChofer.nombre || '').trim();
+    const eq = (nuevoChofer.equipo_habitual || '').trim().toUpperCase();
+    if (!nombre) return;
+    if (choferes.some(c => normTxt(c.nombre) === normTxt(nombre) && (c.equipo_habitual || '').toUpperCase() === eq)) { alert(`${nombre} ya está cargado${eq ? ' y asignado a ' + eq : ''}. No se puede duplicar.`); return; }
+    const mismoNombre = choferes.find(c => normTxt(c.nombre) === normTxt(nombre));
+    if (mismoNombre && !window.confirm(`${nombre} ya existe con ${mismoNombre.equipo_habitual ? 'el equipo ' + mismoNombre.equipo_habitual : 'ningún equipo'}. ¿Cargarlo igual con ${eq || 'ningún equipo'}?`)) return;
+    const mismoEquipo = eq && choferes.find(c => (c.equipo_habitual || '').toUpperCase() === eq && normTxt(c.nombre) !== normTxt(nombre));
+    if (mismoEquipo && !window.confirm(`El equipo ${eq} ya tiene como chofer habitual a ${mismoEquipo.nombre}. ¿Agregar también a ${nombre}?`)) return;
+    const { error } = await supabase.from('choferes').insert([{ nombre, equipo_habitual: eq }]);
+    if (error) { alert('No se pudo agregar el chofer: ' + error.message); return; }
+    registrarActividad('Chofer nuevo', `${nombre} · ${eq || 'sin equipo'}`);
     setNuevoChofer({ nombre: '', equipo_habitual: '' });
+    await fetchDatos();
     alert('¡Chofer agregado correctamente!');
+  };
+  const handleEliminarChofer = async () => {
+    if (!window.confirm(`¿Eliminar a ${editChofer.nombre} de la lista? Sus cargas anteriores no se borran.`)) return;
+    const { error } = await supabase.from('choferes').delete().eq('id', editChofer.id);
+    if (error) { alert('Error al eliminar: ' + error.message); return; }
+    registrarActividad('Chofer eliminado', editChofer.nombre);
+    setEditChofer(null);
+    await fetchDatos();
   };
   const handleGuardarEquipo = async (e) => {
     e.preventDefault();
-    if (!nuevoEquipo.codigo) return;
-    setEquipos([...equipos, nuevoEquipo]);
-    try {
-      await supabase.from('equipos').insert([nuevoEquipo]);
-    } catch (err) { console.error(err); }
-    setNuevoEquipo({ codigo: '', descripcion: '', tipo: 'Máquina', obra_predeterminada: 'RN40', tipo_combustible: 'Infinia Diesel' });
+    const cod = (nuevoEquipo.codigo || '').trim().toUpperCase();
+    if (!cod) return;
+    if (equipos.some(x => (x.codigo || '').toUpperCase() === cod)) { alert(`El equipo ${cod} ya está cargado.`); return; }
+    const { error } = await supabase.from('equipos').insert([{ ...nuevoEquipo, codigo: cod }]);
+    if (error) { alert('No se pudo crear el equipo (¿ejecutaste etapa10_mejoras.sql?): ' + error.message); return; }
+    registrarActividad('Equipo nuevo', `${cod} · ${nuevoEquipo.descripcion}`);
+    setNuevoEquipo({ codigo: '', descripcion: '', tipo: 'Máquina', obra_predeterminada: 'RN40', tipo_combustible: 'Infinia Diesel', modelo: '', patente: '', nro_serie: '' });
+    await fetchDatos();
     alert('¡Equipo creado exitosamente!');
+  };
+  const handleActualizarEquipo = async () => {
+    const { error } = await supabase.from('equipos').update({ descripcion: editEquipo.descripcion || '', tipo: editEquipo.tipo || '', modelo: editEquipo.modelo || '', patente: editEquipo.patente || '', nro_serie: editEquipo.nro_serie || '' }).eq('id', editEquipo.id);
+    if (error) { alert('Error al guardar: ' + error.message); return; }
+    registrarActividad('Equipo modificado', `${editEquipo.codigo} · ${editEquipo.descripcion || ''}`);
+    setEditEquipo(null);
+    await fetchDatos();
+  };
+  const handleEliminarEquipo = async () => {
+    const usos = todasLasCargas.filter(c => c.Equipo === editEquipo.codigo).length;
+    if (usos > 0) { alert(`${editEquipo.codigo} tiene ${usos} cargas registradas, no se puede eliminar. Si ya no lo usás, pasalo a "Fuera de obra" desde Flota e Historial.`); return; }
+    if (!window.confirm(`¿Eliminar el equipo ${editEquipo.codigo}? No tiene cargas registradas.`)) return;
+    const { error } = await supabase.from('equipos').delete().eq('id', editEquipo.id);
+    if (error) { alert('Error al eliminar: ' + error.message); return; }
+    registrarActividad('Equipo eliminado', editEquipo.codigo);
+    setEditEquipo(null);
+    await fetchDatos();
   };
   const handleCambiarObraEquipo = async (codigoEquipo, nuevaObra) => {
     setEquipos(equipos.map(eq => eq.codigo === codigoEquipo ? { ...eq, obra_predeterminada: nuevaObra } : eq));
@@ -587,16 +642,17 @@ export default function App() {
     const nuevoReg = {
       id: Date.now(),
       codigo_equipo: formService.codigo_equipo,
-      fecha: new Date().toISOString().split('T')[0],
+      fecha: formService.fecha || hoyISO(),
       ultimo_hm_km: parseFloat(formService.hm_km_actual) || 0,
       tipo_service: formService.tipo_service,
       observaciones: formService.observaciones
     };
     setMantenimientos([nuevoReg, ...mantenimientos]);
     try {
-      await supabase.from('mantenimiento').insert([nuevoReg]);
-    } catch (err) { console.error(err); }
-    setFormService({ codigo_equipo: '', hm_km_actual: '', tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
+      const { error } = await supabase.from('mantenimiento').insert([nuevoReg]);
+      if (error) throw error;
+    } catch (err) { alert('No se pudo guardar el service: ' + err.message); fetchDatos(); return; }
+    setFormService({ codigo_equipo: '', hm_km_actual: '', fecha: hoyISO(), tipo_service: 'Service Completo (Filtros y Aceite)', observaciones: '' });
     registrarActividad('Service registrado', `${nuevoReg.codigo_equipo} · ${nuevoReg.ultimo_hm_km} hs/km`);
     alert('¡Registro de Service guardado correctamente!');
   };
@@ -703,6 +759,35 @@ export default function App() {
     registrarActividad('Usuario nuevo', `${email} · ${formUsuario.rol}`);
     setFormUsuario({ email: '', nombre: '', rol: 'gerencia' });
   };
+  const handleGuardarServiceEdit = async () => {
+    const hm = aNum(editService.ultimo_hm_km);
+    if (hm === null || !editService.fecha) { alert('Completá la fecha y el horómetro / km.'); return; }
+    const { error } = await supabase.from('mantenimiento').update({ fecha: editService.fecha, codigo_equipo: editService.codigo_equipo, ultimo_hm_km: hm, tipo_service: editService.tipo_service, observaciones: editService.observaciones || '' }).eq('id', editService.id);
+    if (error) { alert('Error al guardar: ' + error.message); return; }
+    registrarActividad('Service editado', `${editService.codigo_equipo} · ${hm} · ${editService.fecha}`);
+    setEditService(null);
+    await fetchDatos();
+  };
+  const handleEliminarService = async () => {
+    if (!window.confirm('¿Eliminar este service?')) return;
+    const { error } = await supabase.from('mantenimiento').delete().eq('id', editService.id);
+    if (error) { alert('Error al eliminar: ' + error.message); return; }
+    registrarActividad('Service eliminado', `${editService.codigo_equipo} · ${editService.ultimo_hm_km} · ${editService.fecha}`);
+    setEditService(null);
+    await fetchDatos();
+  };
+  const handleAgregarPeriodo = async (e) => {
+    e.preventDefault();
+    const f = formPeriodo;
+    if (!f.equipo || !f.desde) { alert('Elegí el equipo y la fecha "Desde".'); return; }
+    if (f.hasta && f.hasta < f.desde) { alert('La fecha "Hasta" no puede ser anterior a "Desde".'); return; }
+    if (!f.hasta && abiertaDe(f.equipo)) { alert('Ese equipo ya tiene un período vigente. Para un período pasado completá la fecha "Hasta".'); return; }
+    const { error } = await supabase.from('asignaciones').insert([{ equipo: f.equipo, estado: f.estado, obra: f.estado === 'En obra' ? f.obra : '', chofer: f.chofer, desde: f.desde, hasta: f.hasta || null, horometro_desde: aNum(f.horometro_desde), horometro_hasta: aNum(f.horometro_hasta), observaciones: f.observaciones }]);
+    if (error) { alert('Error al guardar: ' + error.message); return; }
+    registrarActividad('Período agregado a Flota', `${f.equipo} · ${f.estado} · ${f.obra || '-'} · ${f.chofer || '-'} · ${f.desde} → ${f.hasta || 'vigente'}`);
+    setFormPeriodo({ equipo: '', estado: 'En obra', obra: '', chofer: '', desde: '', hasta: '', horometro_desde: '', horometro_hasta: '', observaciones: '' });
+    await fetchDatos();
+  };
   const handleAgregarObra = async () => {
     const n = nombreObraNueva.trim();
     if (!n) return;
@@ -731,20 +816,22 @@ export default function App() {
       if (error) throw error;
     } catch (err) { alert('No se pudo guardar la unidad (¿ejecutaste etapa6_unidad_lectura.sql?): ' + err.message); }
   };
-  const handleGuardarFactor = async (t, valor) => {
-    const n = aNum(valor);
+  const handleGuardarFactor = async (t, valor, capValor) => {
+    const n = aNum(valor), cap = aNum(capValor);
     if (!n || n < 0.5 || n > 1.5) { alert('El factor debe estar entre 0,5 y 1,5 (por ejemplo 0,9852).'); return; }
-    if (!window.confirm(`Cisterna "${t.nombre}": el factor pasa de ${t.factor_calibracion ?? 1} a ${n}. Se aplica a las cargas nuevas; las anteriores no cambian. ¿Confirmar?`)) return;
-    const { error } = await supabase.from('tanques').update({ factor_calibracion: n }).eq('id', t.id);
-    if (error) { alert('Error al guardar el factor: ' + error.message); return; }
-    setTanques(prev => prev.map(x => x.id === t.id ? { ...x, factor_calibracion: n } : x));
-    registrarActividad('Cambio de factor del surtidor', `${t.nombre}: ${t.factor_calibracion ?? 1} → ${n}`);
-    alert('Factor actualizado.');
+    if (!cap || cap <= 0) { alert('La capacidad debe ser un número mayor a 0.'); return; }
+    if (n !== parseFloat(t.factor_calibracion ?? 1) && !window.confirm(`Cisterna "${t.nombre}": el factor pasa de ${t.factor_calibracion ?? 1} a ${n}. Se aplica a las cargas nuevas; las anteriores no cambian. ¿Confirmar?`)) return;
+    const { error } = await supabase.from('tanques').update({ factor_calibracion: n, capacidad_l: cap }).eq('id', t.id);
+    if (error) { alert('Error al guardar: ' + error.message); return; }
+    setTanques(prev => prev.map(x => x.id === t.id ? { ...x, factor_calibracion: n, capacidad_l: cap, capacidad: cap } : x));
+    registrarActividad('Cisterna modificada', `${t.nombre}: factor ${t.factor_calibracion ?? 1} → ${n} · capacidad ${cap} L`);
+    alert('Datos de la cisterna actualizados.');
   };
   const handleActualizarChofer = async () => {
     const orig = choferes.find(c => c.id === editChofer.id);
     const nombre = (editChofer.nombre || '').trim();
     if (!nombre) { alert('El nombre no puede quedar vacío.'); return; }
+    if (choferes.some(c => c.id !== editChofer.id && normTxt(c.nombre) === normTxt(nombre) && (c.equipo_habitual || '').toUpperCase() === (editChofer.equipo_habitual || '').trim().toUpperCase())) { alert('Ya existe un chofer con ese nombre y esa misma máquina.'); return; }
     const { error } = await supabase.from('choferes').update({ nombre, equipo_habitual: editChofer.equipo_habitual || '' }).eq('id', editChofer.id);
     if (error) { alert('Error al guardar: ' + error.message); return; }
     if (orig && orig.nombre !== nombre && choferes.filter(c => c.nombre === orig.nombre).length === 1 && window.confirm(`¿Cambiar también el nombre en las cargas anteriores ("${orig.nombre}" → "${nombre}")?`)) {
@@ -974,6 +1061,22 @@ export default function App() {
     if (asig.length) tablas.push({ titulo: 'Cambios registrados en Flota e Historial', cols: ['Equipo', 'Estado', 'Obra', 'Chofer', 'Desde', 'Hasta', 'Horóm. entrada → salida'], filas: asig.map(a => [a.equipo, a.estado, a.obra || '-', a.chofer || '-', a.desde, a.hasta || 'Vigente', `${a.horometro_desde ?? '-'} → ${a.horometro_hasta ?? '-'}`]) });
     return tablas;
   })();
+  const combustiblesLista = [...new Set(todasLasCargas.filter(c => c.Equipo).map(c => c['Tipo Combustible']).filter(Boolean))].sort(ordenNat);
+  const mesesComp = (() => {
+    const m = {};
+    todasLasCargas.filter(c => c.Equipo && c.Fecha && (!mcCombustible || c['Tipo Combustible'] === mcCombustible)).forEach(c => {
+      const k = c.Fecha.slice(0, 7);
+      const o = m[k] || (m[k] = { mes: k, litros: 0, cargas: 0, equipos: {} });
+      const l = parseFloat(c['Litros Reales']) || 0;
+      o.litros += l; o.cargas++; o.equipos[c.Equipo] = (o.equipos[c.Equipo] || 0) + l;
+    });
+    return Object.values(m).sort((a, b) => a.mes.localeCompare(b.mes));
+  })();
+  const compUnidades = (() => {
+    if (!mcA || !mcB) return [];
+    const a = (mesesComp.find(x => x.mes === mcA) || {}).equipos || {}, b = (mesesComp.find(x => x.mes === mcB) || {}).equipos || {};
+    return [...new Set([...Object.keys(a), ...Object.keys(b)])].sort(ordenNat).map(eq => ({ eq, a: Math.round((a[eq] || 0) * 10) / 10, b: Math.round((b[eq] || 0) * 10) / 10 }));
+  })();
   const alertas = React.useMemo(() => (puede('alertas') && !modoOffline) ? calcularAlertas({ cargas: todasLasCargas, tanques: alcanceAct ? [] : tanques, asignaciones, hoy: hoyISO(), dias: alertasDias }) : [], [todasLasCargas, tanques, asignaciones, alertasDias, rolesUsuario, modoOffline, alcanceAct]);
   const alertasVistas = alertas.filter(a => !alertasNivel || a.nivel === alertasNivel);
   const nAlertas = alertas.filter(a => a.nivel !== 'info').length;
@@ -1060,10 +1163,11 @@ export default function App() {
                     </div>
                     {esAdmin && t.id !== undefined && (
                       <div style={{ marginTop: '8px', borderTop: '1px solid #1e3a8a', paddingTop: '8px', fontSize: '11px', color: '#b4bcc0' }}>
-                        Factor del surtidor (solo cargas nuevas):
+                        Factor del surtidor (solo cargas nuevas) y capacidad en L:
                         <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
                           <input key={t.id + '-' + t.factor_calibracion} id={`factor-${t.id}`} type="number" step="0.0001" defaultValue={t.factor_calibracion ?? 1} style={{ width: '90px', padding: '5px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} />
-                          <button onClick={() => handleGuardarFactor(t, document.getElementById(`factor-${t.id}`).value)} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '5px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar</button>
+                          <input key={'c' + t.id + '-' + t.capacidad} id={`cap-${t.id}`} type="number" title="Capacidad en litros" defaultValue={t.capacidad_l ?? t.capacidad} style={{ width: '80px', padding: '5px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} />
+                          <button onClick={() => handleGuardarFactor(t, document.getElementById(`factor-${t.id}`).value, document.getElementById(`cap-${t.id}`).value)} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '5px 10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar</button>
                         </div>
                       </div>
                     )}
@@ -1205,6 +1309,53 @@ export default function App() {
                     <span style={{ color: '#cbd5e1' }}>{o.cargas} cargas{o.uso > 0 ? ` · ${o.uso} hs/km · ${(o.litros / o.uso).toFixed(1)} L/u` : ''}</span>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+          <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #3f62a8', marginTop: '25px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '15px' }}>
+              <h2 style={{ fontSize: '18px', color: '#7ea4e8', margin: 0 }}>📅 Comparar mes contra mes (todas las unidades)</h2>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <select value={mcCombustible} onChange={e => setMcCombustible(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }}>
+                  <option value="">Todos los combustibles</option>
+                  {combustiblesLista.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                {mesesComp.length > 0 && <button onClick={() => exportarACSV(mesesComp.map(o => ({ Mes: o.mes, Combustible: mcCombustible || 'Todos', Litros: Math.round(o.litros * 10) / 10, Cargas: o.cargas })), 'comparar_meses')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer' }}>📥 Descargar Excel</button>}
+              </div>
+            </div>
+            {mesesComp.length === 0 ? <p style={{ color: '#b4bcc0', margin: 0 }}>Sin consumos registrados.</p> : (
+              <div style={{ display: 'grid', gap: '8px' }}>
+                {mesesComp.slice(-12).map((o, i, arr) => { const prev = i > 0 ? arr[i - 1] : null; const v = prev && prev.litros > 0 ? Math.round((o.litros / prev.litros - 1) * 100) : null; return (
+                  <div key={o.mes} style={{ display: 'grid', gridTemplateColumns: '80px 1fr 290px', gap: '12px', alignItems: 'center', fontSize: '13px' }}>
+                    <span style={{ color: '#7ea4e8', fontWeight: 'bold' }}>{o.mes}</span>
+                    <div style={{ background: '#2b3133', borderRadius: '6px', height: '22px', overflow: 'hidden' }}><div style={{ width: `${(o.litros / Math.max(...arr.map(x => x.litros))) * 100}%`, height: '100%', background: '#4da3e0', color: '#000', fontSize: '12px', paddingLeft: '8px', lineHeight: '22px', fontWeight: 'bold' }}>{Math.round(o.litros)} L</div></div>
+                    <span style={{ color: '#cbd5e1' }}>{o.cargas} cargas{v !== null ? ` · ${v > 0 ? '+' : ''}${v}% vs mes anterior` : ''}</span>
+                  </div>); })}
+              </div>
+            )}
+            {mesesComp.length > 1 && (
+              <div style={{ marginTop: '22px' }}>
+                <h3 style={{ fontSize: '15px', color: '#7ea4e8', margin: '0 0 10px' }}>Comparar dos meses unidad por unidad</h3>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                  <select value={mcA} onChange={e => setMcA(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }}><option value="">Mes A...</option>{mesesComp.map(o => <option key={o.mes} value={o.mes}>{o.mes}</option>)}</select>
+                  <select value={mcB} onChange={e => setMcB(e.target.value)} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }}><option value="">Mes B...</option>{mesesComp.map(o => <option key={o.mes} value={o.mes}>{o.mes}</option>)}</select>
+                  {compUnidades.length > 0 && <button onClick={() => exportarACSV(compUnidades.map(u => ({ Equipo: u.eq, [mcA]: u.a, [mcB]: u.b, Diferencia: Math.round((u.b - u.a) * 10) / 10 })), 'comparar_unidades')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '7px 12px', borderRadius: '6px', cursor: 'pointer' }}>📥 Descargar Excel</button>}
+                </div>
+                {compUnidades.length > 0 && (
+                  <div style={{ overflowX: 'auto', maxHeight: '380px', overflowY: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left' }}>
+                      <thead><tr style={{ color: '#b4bcc0', background: '#2b3133' }}><th style={{ padding: '8px' }}>Unidad</th><th style={{ padding: '8px' }}>{mcA} (L)</th><th style={{ padding: '8px' }}>{mcB} (L)</th><th style={{ padding: '8px' }}>Diferencia</th></tr></thead>
+                      <tbody>
+                        {compUnidades.map(u => { const d = Math.round((u.b - u.a) * 10) / 10; return (
+                          <tr key={u.eq} style={{ borderTop: '1px solid #454e51' }}>
+                            <td style={{ padding: '8px', fontWeight: 'bold', color: '#7ea4e8' }}>{u.eq}</td><td style={{ padding: '8px' }}>{u.a}</td><td style={{ padding: '8px' }}>{u.b}</td>
+                            <td style={{ padding: '8px', fontWeight: 'bold', color: d > 0 ? '#f87171' : d < 0 ? '#4ade80' : '#b4bcc0' }}>{d > 0 ? '+' : ''}{d}</td>
+                          </tr>); })}
+                        <tr style={{ borderTop: '2px solid #3f62a8', fontWeight: 'bold' }}><td style={{ padding: '8px' }}>TOTAL</td><td style={{ padding: '8px' }}>{Math.round(compUnidades.reduce((t, u) => t + u.a, 0))}</td><td style={{ padding: '8px' }}>{Math.round(compUnidades.reduce((t, u) => t + u.b, 0))}</td><td style={{ padding: '8px' }}>{Math.round(compUnidades.reduce((t, u) => t + u.b - u.a, 0))}</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1352,12 +1503,21 @@ export default function App() {
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Origen / Cisterna</label>
               <select value={formCarga.Origen} onChange={e => setFormCarga({...formCarga, Origen: e.target.value})} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
-                <option value="Cisterna Camión">Cisterna Camión (Reparto)</option>
-                <option value="Cisterna Principal (PPL)">Cisterna Principal (PPL)</option>
+                {tanques.filter(t => !/plaasf/i.test(t.nombre)).map(t => <option key={t.nombre} value={t.nombre}>{t.nombre}{t.nombre === 'Cisterna Camión' ? ' (Reparto)' : ''}</option>)}
                 <option value="YPF">YPF (Compra Principal)</option>
                 <option value="Dafre (chiringuito)">Dafre (Compra Camión)</option>
+                <option value="YPF 2">YPF 2 (Compra / consumo directo)</option>
               </select>
             </div>
+            {(formCarga["Tipo Movimiento"] === 'Compra' || formCarga["Tipo Movimiento"] === 'Transferencia') && (
+              <div>
+                <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Cisterna destino (donde entra el combustible)</label>
+                <select value={destinoCarga} onChange={e => setDestinoCarga(e.target.value)} style={{ width: '100%', padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px', marginTop: '5px' }}>
+                  <option value="">Automático (según el origen)</option>
+                  {tanques.filter(t => !/plaasf/i.test(t.nombre)).map(t => <option key={t.nombre} value={t.nombre}>{t.nombre}</option>)}
+                </select>
+              </div>
+            )}
             <div>
               <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Código de Equipo (Predictivo)</label>
               <input 
@@ -1422,11 +1582,32 @@ export default function App() {
                   <option value="Máquina">Máquina (Service c/250 hs)</option>
                   <option value="Camión / Vehículo">Camión / Vehículo (Service c/400 km)</option>
                 </select>
+                <input type="text" placeholder="Modelo" value={nuevoEquipo.modelo} onChange={e => setNuevoEquipo({...nuevoEquipo, modelo: e.target.value})} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} />
+                <input type="text" placeholder="Patente" value={nuevoEquipo.patente} onChange={e => setNuevoEquipo({...nuevoEquipo, patente: e.target.value})} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} />
+                <input type="text" placeholder="N° de serie" value={nuevoEquipo.nro_serie} onChange={e => setNuevoEquipo({...nuevoEquipo, nro_serie: e.target.value})} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} />
                 <button type="submit" style={{ background: '#4ade80', color: '#000', border: 'none', padding: '8px 15px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar Equipo</button>
               </form>
             </div>
           )}
           <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
+            {editEquipo && (
+              <div style={{ background: '#2b3133', border: '1px solid #7ea4e8', borderRadius: '10px', padding: '15px', marginBottom: '15px' }}>
+                <h3 style={{ color: '#7ea4e8', margin: '0 0 10px', fontSize: '15px' }}>✏️ Editando {editEquipo.codigo}</h3>
+                <datalist id="dl-tipos-eq">{[...new Set(equipos.map(x => x.tipo).filter(Boolean))].sort(ordenNat).map(t => <option key={t} value={t} />)}</datalist>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '10px' }}>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Descripción<input value={editEquipo.descripcion || ''} onChange={e => setEditEquipo({ ...editEquipo, descripcion: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Tipo<input list="dl-tipos-eq" value={editEquipo.tipo || ''} onChange={e => setEditEquipo({ ...editEquipo, tipo: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Modelo<input value={editEquipo.modelo || ''} onChange={e => setEditEquipo({ ...editEquipo, modelo: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Patente<input value={editEquipo.patente || ''} onChange={e => setEditEquipo({ ...editEquipo, patente: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>N° de serie<input value={editEquipo.nro_serie || ''} onChange={e => setEditEquipo({ ...editEquipo, nro_serie: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                </div>
+                <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+                  <button onClick={handleActualizarEquipo} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar cambios</button>
+                  <button onClick={() => setEditEquipo(null)} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer' }}>Cancelar</button>
+                  <button onClick={handleEliminarEquipo} style={{ background: '#ef4444', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer', marginLeft: 'auto' }}>Eliminar equipo</button>
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
               <h2 style={{ fontSize: '18px', color: '#4da3e0', margin: 0 }}>Gestión de Flota y Cambio de Obra ({equipos.length})</h2>
               <button onClick={() => exportarACSV(equipos, 'flota_equipos')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}>📥 Descargar Excel</button>
@@ -1437,6 +1618,8 @@ export default function App() {
                   <th style={{ padding: '10px' }}>Código</th>
                   <th style={{ padding: '10px' }}>Descripción</th>
                   <th style={{ padding: '10px' }}>Tipo</th>
+                  <th style={{ padding: '10px' }}>Modelo</th>
+                  <th style={{ padding: '10px' }}>Patente / N° serie</th>
                   <th style={{ padding: '10px' }}>Se mide en</th>
                   <th style={{ padding: '10px' }}>Obra Actual / Asignar</th>
                 </tr>
@@ -1444,9 +1627,11 @@ export default function App() {
               <tbody>
                 {equipos.map((eq, i) => (
                   <tr key={i} style={{ borderBottom: '1px solid #131b31' }}>
-                    <td style={{ padding: '10px', fontWeight: 'bold', color: '#7ea4e8' }}>{eq.codigo}</td>
+                    <td style={{ padding: '10px', fontWeight: 'bold', color: '#7ea4e8', whiteSpace: 'nowrap' }}>{eq.codigo} {(esAdmin || tiene('logistica')) && eq.id && <button onClick={() => setEditEquipo({ ...eq })} title="Editar" style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '2px 6px', marginLeft: '6px' }}>✏️</button>}</td>
                     <td style={{ padding: '10px' }}>{eq.descripcion || '-'}</td>
                     <td style={{ padding: '10px' }}>{eq.tipo || 'Máquina'}</td>
+                    <td style={{ padding: '10px' }}>{eq.modelo || '-'}</td>
+                    <td style={{ padding: '10px', fontSize: '12px' }}>{[eq.patente, eq.nro_serie].filter(Boolean).join(' / ') || '-'}</td>
                     <td style={{ padding: '10px' }}>
                       <select value={usaKm(eq.codigo) ? 'km' : 'horas'} onChange={e => handleCambiarUnidad(eq.codigo, e.target.value)} disabled={!(esAdmin || tiene('logistica'))} style={{ padding: '5px 8px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }}>
                         <option value="horas">Horas</option>
@@ -1494,6 +1679,7 @@ export default function App() {
                 <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
                   <button onClick={handleActualizarChofer} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar cambios</button>
                   <button onClick={() => setEditChofer(null)} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer' }}>Cancelar</button>
+                  <button onClick={handleEliminarChofer} style={{ background: '#ef4444', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer', marginLeft: 'auto' }}>Eliminar chofer</button>
                 </div>
               </div>
             )}
@@ -1553,6 +1739,7 @@ export default function App() {
                   <option value="">Seleccionar Equipo...</option>
                   {equipos.map((e, i) => <option key={i} value={e.codigo}>{e.codigo} - {e.descripcion}</option>)}
                 </select>
+                <input type="date" value={formService.fecha} onChange={e => setFormService({ ...formService, fecha: e.target.value })} title="Fecha en que se hizo el service" style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px' }} />
                 <input type="number" placeholder="Horómetro / Km del Service" value={formService.hm_km_actual} onChange={e => setFormService({...formService, hm_km_actual: e.target.value})} style={{ padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
                 <input type="text" placeholder="Detalles (Ej: Filtro aceite, aire)" value={formService.observaciones} onChange={e => setFormService({...formService, observaciones: e.target.value})} style={{ padding: '10px', background: '#2b3133', border: '1px solid #1e3a8a', color: '#fff', borderRadius: '6px' }} />
                 <button type="submit" style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar Service</button>
@@ -1600,6 +1787,23 @@ export default function App() {
           </div>
           <div style={{ backgroundColor: '#373f42', padding: '25px', borderRadius: '12px', border: '1px solid #1e3a8a' }}>
             <h2 style={{ fontSize: '18px', color: '#7ea4e8', marginBottom: '15px' }}>📜 Historial de Services Registrados</h2>
+            {editService && puedeServices && (
+              <div style={{ background: '#2b3133', border: '1px solid #7ea4e8', borderRadius: '10px', padding: '15px', marginBottom: '15px' }}>
+                <h3 style={{ color: '#7ea4e8', margin: '0 0 10px', fontSize: '15px' }}>✏️ Editando service</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Fecha del service<input type="date" value={editService.fecha || ''} onChange={e => setEditService({ ...editService, fecha: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Equipo<select value={editService.codigo_equipo} onChange={e => setEditService({ ...editService, codigo_equipo: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }}>{equipos.map(x => <option key={x.codigo} value={x.codigo}>{x.codigo}</option>)}</select></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Horómetro / km<input type="number" step="any" value={editService.ultimo_hm_km ?? ''} onChange={e => setEditService({ ...editService, ultimo_hm_km: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Tipo de service<input value={editService.tipo_service || ''} onChange={e => setEditService({ ...editService, tipo_service: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Observaciones<input value={editService.observaciones || ''} onChange={e => setEditService({ ...editService, observaciones: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                </div>
+                <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+                  <button onClick={handleGuardarServiceEdit} style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Guardar cambios</button>
+                  <button onClick={() => setEditService(null)} style={{ background: '#505a5e', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer' }}>Cancelar</button>
+                  <button onClick={handleEliminarService} style={{ background: '#ef4444', color: '#fff', border: 'none', padding: '9px 16px', borderRadius: '6px', cursor: 'pointer', marginLeft: 'auto' }}>Eliminar service</button>
+                </div>
+              </div>
+            )}
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #1e3a8a', color: '#b4bcc0', backgroundColor: '#2b3133' }}>
@@ -1608,6 +1812,7 @@ export default function App() {
                   <th style={{ padding: '10px' }}>Horómetro / KM</th>
                   <th style={{ padding: '10px' }}>Tipo de Service</th>
                   <th style={{ padding: '10px' }}>Observaciones</th>
+                  {puedeServices && <th style={{ padding: '10px' }}></th>}
                 </tr>
               </thead>
               <tbody>
@@ -1619,6 +1824,7 @@ export default function App() {
                       <td style={{ padding: '10px' }}>{m.ultimo_hm_km}</td>
                       <td style={{ padding: '10px' }}>{m.tipo_service}</td>
                       <td style={{ padding: '10px' }}>{m.observaciones || '-'}</td>
+                      {puedeServices && <td style={{ padding: '10px' }}>{m.id && <button onClick={() => setEditService({ ...m })} title="Editar" style={{ background: 'transparent', border: '1px solid #7ea4e8', color: '#7ea4e8', borderRadius: '6px', cursor: 'pointer', padding: '3px 8px' }}>✏️</button>}</td>}
                     </tr>
                   ))
                 ) : (
@@ -1814,6 +2020,22 @@ export default function App() {
                 <button onClick={() => exportarACSV(asignaciones.filter(a => (!filtroAsigEquipo || a.equipo === filtroAsigEquipo) && (!filtroAsigObra || a.obra === filtroAsigObra)).map(a => ({ Equipo: a.equipo, Estado: a.estado, Obra: a.obra, Chofer: a.chofer, Desde: a.desde, Hasta: a.hasta || 'Vigente', 'Horómetro entrada': a.horometro_desde, 'Horómetro salida': a.horometro_hasta, 'Horas/km': datosEstadia(a).uso, Litros: datosEstadia(a).litros, Observaciones: a.observaciones })), 'historial_asignaciones')} style={{ background: '#3f62a8', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>📥 Descargar Excel</button>
               </div>
             </div>
+            <details style={{ marginBottom: '15px' }}>
+              <summary style={{ cursor: 'pointer', color: '#7ea4e8', fontWeight: 'bold', fontSize: '14px' }}>➕ Agregar un período del pasado (cambio de chofer, obra o estado que no se registró)</summary>
+              <form onSubmit={handleAgregarPeriodo} style={{ background: '#2b3133', border: '1px solid #3f62a8', borderRadius: '10px', padding: '15px', marginTop: '10px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Equipo<select value={formPeriodo.equipo} onChange={e => setFormPeriodo({ ...formPeriodo, equipo: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }}><option value="">Elegir...</option>{equipos.map(x => <option key={x.codigo} value={x.codigo}>{x.codigo} - {x.descripcion}</option>)}</select></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Estado<select value={formPeriodo.estado} onChange={e => setFormPeriodo({ ...formPeriodo, estado: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }}>{ESTADOS_FLOTA.map(x => <option key={x} value={x}>{x}</option>)}</select></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Obra<select disabled={formPeriodo.estado !== 'En obra'} value={formPeriodo.obra} onChange={e => setFormPeriodo({ ...formPeriodo, obra: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%' }}><option value="">Elegir...</option>{obrasSeleccionables.map(o => <option key={o} value={o}>{o}</option>)}</select></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Chofer<input list="fl-choferes" value={formPeriodo.chofer} onChange={e => setFormPeriodo({ ...formPeriodo, chofer: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Desde<input type="date" value={formPeriodo.desde} onChange={e => setFormPeriodo({ ...formPeriodo, desde: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Hasta<input type="date" value={formPeriodo.hasta} onChange={e => setFormPeriodo({ ...formPeriodo, hasta: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Horóm. entrada<input type="number" step="any" value={formPeriodo.horometro_desde} onChange={e => setFormPeriodo({ ...formPeriodo, horometro_desde: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                  <label style={{ fontSize: '12px', color: '#cbd5e1' }}>Horóm. salida<input type="number" step="any" value={formPeriodo.horometro_hasta} onChange={e => setFormPeriodo({ ...formPeriodo, horometro_hasta: e.target.value })} style={{ padding: '8px', background: '#2b3133', border: '1px solid #3f62a8', color: '#fff', borderRadius: '6px', width: '100%', boxSizing: 'border-box' }} /></label>
+                </div>
+                <button type="submit" style={{ background: '#7ea4e8', color: '#000', border: 'none', padding: '9px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', marginTop: '12px' }}>Agregar período</button>
+              </form>
+            </details>
             {editAsig && (
               <div style={{ background: '#2b3133', border: '1px solid #7ea4e8', borderRadius: '10px', padding: '15px', marginBottom: '15px' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
